@@ -243,7 +243,7 @@ The 17-30% gap between LLMs and the Rule-Based agent is the value of this enviro
 
 ```bash
 # Build and run with Docker
-docker build -t credit_assessment_env-env:latest -f server/Dockerfile .
+docker build -t credit_assessment_env-env:latest .
 docker run -p 8000:8000 credit_assessment_env-env:latest
 
 # Run locally with uv (from the parent directory)
