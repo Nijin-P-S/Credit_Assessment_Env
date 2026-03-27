@@ -152,6 +152,14 @@ class CreditAssessmentEnvironment(Environment):
         )
 
     def get_metadata(self) -> EnvironmentMetadata:
+        readme = ""
+        try:
+            from pathlib import Path
+            readme_path = Path(__file__).resolve().parent.parent / "README.md"
+            readme = readme_path.read_text(encoding="utf-8")
+        except Exception:
+            pass
+
         return EnvironmentMetadata(
             name="Credit Assessment Environment",
             description=(
@@ -159,10 +167,12 @@ class CreditAssessmentEnvironment(Environment):
                 "Agents must apply RBI-compliant rules including CIBIL thresholds, FOIR limits, "
                 "LTV caps, and RERA compliance to approve or reject applications."
             ),
+            readme_content=readme or None,
             version="0.1.0",
             author="Nijin",
-            documentation_url="https://huggingface.co/spaces/nijin/credit-assessment-env",
+            documentation_url="https://huggingface.co/spaces/iamnijin/credit-assessment-env",
         )
+
 
     @property
     def state(self) -> State:
