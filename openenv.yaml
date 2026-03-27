@@ -1,0 +1,33 @@
+spec_version: 1
+name: credit_assessment_env
+type: space
+runtime: fastapi
+app: server.app:app
+port: 8000
+
+tasks:
+  1:
+    name: Personal Loan Assessment
+    difficulty: easy
+    description: >
+      Assess a personal loan application based on credit score, FOIR,
+      employment stability, and document completeness. Trap profiles
+      include applicants with excellent financials but credit just below 700.
+  2:
+    name: Vehicle Loan Assessment
+    difficulty: medium
+    description: >
+      Assess a vehicle loan with collateral and LTV ratio complexity.
+      Requires checking all personal loan criteria plus LTV against 85% limit.
+      Trap profiles include high-income applicants with low credit scores
+      and cases where LTV is just over the threshold.
+  3:
+    name: Home Loan Assessment
+    difficulty: hard
+    description: >
+      Assess a home loan following RBI tiered LTV norms and RERA compliance.
+      The agent must compute LTV from property value and loan amount (not shown
+      directly), apply the correct tier (<=30L: 90%, 30-75L: 80%, >75L: 75%),
+      and reject non-RERA properties regardless of financial strength. Trap
+      profiles feature conflicting signals designed to test precise rule
+      adherence over pattern matching.

@@ -1,0 +1,29 @@
+try:
+    from ...models import CreditAssessmentAction
+except ImportError:
+    from models import CreditAssessmentAction
+
+
+def reward_home(action: CreditAssessmentAction, applicant: dict, ground_truth: str) -> float:
+    """Reward for home loan decisions."""
+    decision = action.decision.value
+
+    if decision == ground_truth:
+        return 10.0
+
+    if decision == "request_docs" and not applicant["documents_complete"]:
+        return 3.0
+
+    if decision == "approve" and applicant["rera_registered"] is False:
+        return -20.0
+
+    if decision == "approve" and ground_truth == "reject":
+        return -15.0
+
+    if decision == "reject" and ground_truth == "approve":
+        return -8.0
+
+    if decision == "counter_offer" and not action.counter_offer_amount:
+        return -5.0
+
+    return -2.0
