@@ -244,10 +244,10 @@ The 17-30% gap between LLMs and the Rule-Based agent is the value of this enviro
 ```bash
 # Build and run with Docker
 docker build -t credit_assessment_env-env:latest .
-docker run -p 8000:8000 credit_assessment_env-env:latest
+docker run -p 7860:7860 credit_assessment_env-env:latest
 
 # Run locally with uv (from the parent directory)
-uv run uvicorn credit_assessment_env.server.app:app --host 0.0.0.0 --port 8000 --reload
+uv run uvicorn credit_assessment_env.server.app:app --host 0.0.0.0 --port 7860 --reload
 
 # Deploy to Hugging Face Spaces
 openenv push

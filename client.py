@@ -16,7 +16,7 @@ class CreditAssessmentEnv(
     WebSocket client for interacting with the Credit Assessment server.
 
     Example:
-        >>> with CreditAssessmentEnv(base_url="http://localhost:8000") as client:
+        >>> with CreditAssessmentEnv(base_url="http://localhost:7860") as client:
         ...     result = client.reset()
         ...     print(result.observation.applicant_profile)
         ...     result = client.step(CreditAssessmentAction(
