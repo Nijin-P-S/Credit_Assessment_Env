@@ -25,13 +25,20 @@ Built on [OpenEnv](https://github.com/facebookresearch/openenv), this environmen
 
 ## Quick Start
 
+```bash
+git clone https://huggingface.co/spaces/iamnijin/credit-assessment-env
+cd credit-assessment-env
+uv pip install .
+```
+
 ```python
 from credit_assessment_env import CreditAssessmentAction, CreditAssessmentEnv
 from credit_assessment_env.loan_decision import LoanDecision
 
-try:
-    env = CreditAssessmentEnv.from_docker_image("credit_assessment_env-env:latest")
+# Connect to the live HuggingFace Space
+env = CreditAssessmentEnv(base_url="https://iamnijin-credit-assessment-env.hf.space").sync()
 
+with env:
     result = env.reset()
     print(result.observation.applicant_profile)
 
@@ -40,9 +47,6 @@ try:
         reasoning="Strong credit score and low FOIR"
     ))
     print(f"Reward: {result.reward}, Done: {result.done}")
-
-finally:
-    env.close()
 ```
 
 ## Underwriting Criteria
@@ -172,7 +176,7 @@ The environment includes **trap profiles** designed to test whether an LLM can f
 
 ```
 credit_assessment_env/
-├── inference.py               # LLM inference entry point (mandatory for hackathon)
+├── inference.py               # LLM inference entry point
 ├── baseline.py                # Baseline agents (Random, Rule-Based, LLM)
 ├── models.py                  # Action and Observation schemas
 ├── loan_decision.py           # LoanDecision enum
