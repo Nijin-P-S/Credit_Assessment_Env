@@ -172,6 +172,8 @@ The environment includes **trap profiles** designed to test whether an LLM can f
 
 ```
 credit_assessment_env/
+├── inference.py               # LLM inference entry point (mandatory for hackathon)
+├── baseline.py                # Baseline agents (Random, Rule-Based, LLM)
 ├── models.py                  # Action and Observation schemas
 ├── loan_decision.py           # LoanDecision enum
 ├── client.py                  # CreditAssessmentEnv client
@@ -238,6 +240,30 @@ The **Rule-Based agent** follows the exact ground truth logic — upper bound at
 **GPT-4o-mini** scores 0.833 overall, handling personal and vehicle loans well (90%) but struggling with home loans (70%) where it must compute LTV from raw values and apply tiered RBI limits. **GPT-5** scores 0.700 — interestingly lower, likely due to running at temperature 1.0 (the only value GPT-5 supports) which introduces variability in rule-following.
 
 The 17-30% gap between LLMs and the Rule-Based agent is the value of this environment: there's measurable room for improvement, and closing the gap requires precise rule adherence over pattern matching.
+
+## Inference Script
+
+The `inference.py` at the project root runs an LLM agent against all 3 tasks using the OpenAI client.
+
+**Required environment variables:**
+
+| Variable | Description | Example |
+|----------|-------------|---------|
+| `API_BASE_URL` | LLM API endpoint | `https://router.huggingface.co/v1` |
+| `MODEL_NAME` | Model identifier | `meta-llama/Llama-3.1-8B-Instruct` |
+| `HF_TOKEN` | API key / HF token | `hf_...` |
+
+```bash
+export API_BASE_URL="https://router.huggingface.co/v1"
+export HF_TOKEN="hf_..."
+export MODEL_NAME="meta-llama/Llama-3.1-8B-Instruct"
+
+uv run python inference.py
+```
+
+The script evaluates 10 episodes per task (seed 42) and prints per-task grades and an overall score. It uses the standard `openai.OpenAI` client, so any OpenAI-compatible endpoint works — HuggingFace Inference, OpenAI API, Azure OpenAI, etc.
+
+![Inference Results](assets/inference_sample.png)
 
 ## Building & Running
 
