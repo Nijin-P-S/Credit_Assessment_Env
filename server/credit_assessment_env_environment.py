@@ -154,9 +154,17 @@ class CreditAssessmentEnvironment(Environment):
     def get_metadata(self) -> EnvironmentMetadata:
         readme = ""
         try:
+            import os
             from pathlib import Path
-            readme_path = Path(__file__).resolve().parent.parent / "README.md"
-            readme = readme_path.read_text(encoding="utf-8")
+            candidates = [
+                os.environ.get("ENV_README_PATH"),
+                Path(__file__).resolve().parent.parent / "README.md",
+                Path("/app/env/README.md"),
+            ]
+            for candidate in candidates:
+                if candidate and Path(candidate).exists():
+                    readme = Path(candidate).read_text(encoding="utf-8")
+                    break
         except Exception:
             pass
 
