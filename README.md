@@ -249,13 +249,16 @@ The 17-30% gap between LLMs and the Rule-Based agent is the value of this enviro
 
 The `inference.py` at the project root runs an LLM agent against all 3 tasks using the OpenAI client.
 
-**Required environment variables:**
+**Environment variables:**
 
-| Variable | Description | Example |
-|----------|-------------|---------|
-| `API_BASE_URL` | LLM API endpoint | `https://router.huggingface.co/v1` |
-| `MODEL_NAME` | Model identifier | `meta-llama/Llama-3.1-8B-Instruct` |
-| `HF_TOKEN` | API key / HF token | `hf_...` |
+| Variable | Required | Default | Description |
+|----------|----------|---------|-------------|
+| `API_BASE_URL` | No | `https://router.huggingface.co/v1` | LLM API endpoint |
+| `MODEL_NAME` | No | `gpt-4o-mini` | Model identifier |
+| `HF_TOKEN` | Yes | — | API key / HF token |
+| `LOCAL_IMAGE_NAME` | No | `credit_assessment_env-env:latest` | Local Docker image name |
+| `TASK_NAME` | No | `all` | Task to run: `all`, `1`, `2`, `3`, `personal-loan`, `vehicle-loan`, `home-loan` |
+| `BENCHMARK` | No | `credit-assessment` | Benchmark label used in log output |
 
 ```bash
 export API_BASE_URL="https://router.huggingface.co/v1"
@@ -265,7 +268,15 @@ export MODEL_NAME="meta-llama/Llama-3.1-8B-Instruct"
 uv run python inference.py
 ```
 
-The script evaluates 10 episodes per task (seed 42) and prints per-task grades and an overall score. It uses the standard `openai.OpenAI` client, so any OpenAI-compatible endpoint works — HuggingFace Inference, OpenAI API, Azure OpenAI, etc.
+The script runs 10 episodes per task (seed 42) and emits structured stdout in the required hackathon format:
+
+```
+[START] task=personal-loan env=credit-assessment model=meta-llama/Llama-3.1-8B-Instruct
+[STEP] step=1 action=approve reward=10.00 done=true error=null
+[END] success=true steps=1 rewards=10.00
+```
+
+It uses the standard `openai.OpenAI` client, so any OpenAI-compatible endpoint works — HuggingFace Inference, OpenAI API, Azure OpenAI, etc.
 
 ![Inference Results](assets/inference_sample.png)
 
