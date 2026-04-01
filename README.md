@@ -247,7 +247,7 @@ The 17-30% gap between LLMs and the Rule-Based agent is the value of this enviro
 
 ## Inference Script
 
-The `inference.py` at the project root runs an LLM agent against all 3 tasks using the OpenAI client.
+The `inference.py` at the project root runs an LLM agent against all 3 tasks using the OpenAI client. It connects to the environment via `CreditAssessmentEnv.from_docker_image()`, matching the standard OpenEnv client SDK pattern.
 
 **Environment variables:**
 
@@ -256,7 +256,7 @@ The `inference.py` at the project root runs an LLM agent against all 3 tasks usi
 | `API_BASE_URL` | No | `https://router.huggingface.co/v1` | LLM API endpoint |
 | `MODEL_NAME` | No | `gpt-4o-mini` | Model identifier |
 | `HF_TOKEN` | Yes | — | API key / HF token |
-| `LOCAL_IMAGE_NAME` | No | `credit_assessment_env-env:latest` | Local Docker image name |
+| `LOCAL_IMAGE_NAME` | No | `credit_assessment_env-env:latest` | Docker image for the environment |
 | `TASK_NAME` | No | `all` | Task to run: `all`, `1`, `2`, `3`, `personal-loan`, `vehicle-loan`, `home-loan` |
 | `BENCHMARK` | No | `credit-assessment` | Benchmark label used in log output |
 
@@ -273,7 +273,7 @@ The script runs 10 episodes per task (seed 42) and emits structured stdout in th
 ```
 [START] task=personal-loan env=credit-assessment model=meta-llama/Llama-3.1-8B-Instruct
 [STEP] step=1 action=approve reward=10.00 done=true error=null
-[END] success=true steps=1 rewards=10.00
+[END] success=true steps=1 score=1.000 rewards=10.00
 ```
 
 It uses the standard `openai.OpenAI` client, so any OpenAI-compatible endpoint works — HuggingFace Inference, OpenAI API, Azure OpenAI, etc.

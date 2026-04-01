@@ -1,16 +1,42 @@
 """
 Inference Script for Credit Assessment Environment
 ===================================================
-MANDATORY environment variables (set before running):
-    API_BASE_URL       The API endpoint for the LLM (e.g. https://router.huggingface.co/v1)
-    MODEL_NAME         The model identifier (e.g. meta-llama/Llama-3.1-8B-Instruct)
-    HF_TOKEN           Your Hugging Face / API key
-    LOCAL_IMAGE_NAME   (optional) local image name – not used for this env
+MANDATORY
+- Before submitting, ensure the following variables are defined in your environment configuration:
+    API_BASE_URL   The API endpoint for the LLM.
+    MODEL_NAME     The model identifier to use for inference.
+    HF_TOKEN       Your Hugging Face / API key.
+    LOCAL_IMAGE_NAME The name of the local image to use for the environment if you are using from_docker_image()
+                     method
 
-STDOUT FORMAT (emitted per episode):
+- Defaults are set only for API_BASE_URL and MODEL_NAME
+    (and should reflect your active inference setup):
+    API_BASE_URL = os.getenv("API_BASE_URL", "<your-active-endpoint>")
+    MODEL_NAME = os.getenv("MODEL_NAME", "<your-active-model>")
+
+- The inference script must be named `inference.py` and placed in the root directory of the project
+- Participants must use OpenAI Client for all LLM calls using above variables
+
+STDOUT FORMAT
+- The script must emit exactly three line types to stdout, in this order:
+
     [START] task=<task_name> env=<benchmark> model=<model_name>
     [STEP]  step=<n> action=<action_str> reward=<0.00> done=<true|false> error=<msg|null>
-    [END]   success=<true|false> steps=<n> rewards=<r1,r2,...,rn>
+    [END]   success=<true|false> steps=<n> score=<0.000> rewards=<r1,r2,...,rn>
+
+  Rules:
+    - One [START] line at episode begin.
+    - One [STEP] line per step, immediately after env.step() returns.
+    - One [END] line after env.close(), always emitted (even on exception).
+    - reward and rewards are formatted to 2 decimal places.
+    - done and success are lowercase booleans: true or false.
+    - error is the raw last_action_error string, or null if none.
+    - All fields on a single line with no newlines within a line.
+
+  Example:
+    [START] task=personal-loan env=credit-assessment model=meta-llama/Llama-3.1-8B-Instruct
+    [STEP] step=1 action=approve reward=10.00 done=true error=null
+    [END] success=true steps=1 score=1.000 rewards=10.00
 
 Usage:
     export API_BASE_URL="https://router.huggingface.co/v1"
@@ -19,6 +45,7 @@ Usage:
     uv run python inference.py
 """
 
+import asyncio
 import json
 import os
 import sys
@@ -26,24 +53,56 @@ import textwrap
 from typing import List, Optional
 
 from openai import OpenAI
+from openenv.core.containers.runtime.providers import LocalDockerProvider
+
+
+class SlowStartProvider(LocalDockerProvider):
+    """Maps to container port 7860 (Dockerfile CMD) and uses a longer ready-timeout."""
+
+    def start_container(self, image: str, port=None, env_vars=None, **kwargs):
+        import subprocess, time
+        if port is None:
+            port = self._find_available_port()
+        self._container_name = self._generate_container_name(image)
+        cmd = ["docker", "run", "-d", "--name", self._container_name, "-p", f"{port}:7860"]
+        if env_vars:
+            for k, v in env_vars.items():
+                cmd.extend(["-e", f"{k}={v}"])
+        cmd.append(image)
+        result = subprocess.run(cmd, capture_output=True, text=True, check=True)
+        self._container_id = result.stdout.strip()
+        time.sleep(1)
+        return f"http://localhost:{port}"
+
+    def wait_for_ready(self, base_url: str, timeout_s: float = 120.0) -> None:
+        super().wait_for_ready(base_url, timeout_s=timeout_s)
+
 
 parent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if parent_dir not in sys.path:
     sys.path.insert(0, parent_dir)
 
+from credit_assessment_env import CreditAssessmentAction, CreditAssessmentEnv
 from credit_assessment_env.loan_decision import LoanDecision
-from credit_assessment_env.models import CreditAssessmentAction, CreditAssessmentObservation
-from credit_assessment_env.server.credit_assessment_env_environment import CreditAssessmentEnvironment
 
-API_BASE_URL = os.getenv("API_BASE_URL", "https://router.huggingface.co/v1")
+LOCAL_IMAGE_NAME = os.getenv("LOCAL_IMAGE_NAME") or os.getenv("IMAGE_NAME") or "credit_assessment_env-env:latest"
+API_BASE_URL = os.getenv("API_BASE_URL") or "https://router.huggingface.co/v1"
 API_KEY = os.getenv("HF_TOKEN") or os.getenv("API_KEY") or os.getenv("OPENAI_API_KEY")
-MODEL_NAME = os.getenv("MODEL_NAME", "gpt-4o-mini")
-LOCAL_IMAGE_NAME = os.getenv("LOCAL_IMAGE_NAME", "credit_assessment_env-env:latest")
+MODEL_NAME = os.getenv("MODEL_NAME") or "gpt-4o-mini"
 TASK_NAME = os.getenv("TASK_NAME", "all")
 BENCHMARK = os.getenv("BENCHMARK", "credit-assessment")
 
 EPISODES_PER_TASK = 10
 SEED = 42
+MAX_STEPS = 3
+MAX_TOTAL_REWARD = 10.0
+SUCCESS_SCORE_THRESHOLD = 0.1
+
+TASKS = {
+    1: "personal-loan",
+    2: "vehicle-loan",
+    3: "home-loan",
+}
 
 SYSTEM_PROMPT = textwrap.dedent("""\
     You are a senior loan officer at an Indian bank. You assess loan applications
@@ -83,29 +142,33 @@ def log_step(step: int, action: str, reward: float, done: bool, error: Optional[
     )
 
 
-def log_end(success: bool, steps: int, rewards: List[float]) -> None:
+def log_end(success: bool, steps: int, score: float, rewards: List[float]) -> None:
     rewards_str = ",".join(f"{r:.2f}" for r in rewards)
-    print(f"[END] success={str(success).lower()} steps={steps} rewards={rewards_str}", flush=True)
+    print(
+        f"[END] success={str(success).lower()} steps={steps} score={score:.3f} rewards={rewards_str}",
+        flush=True,
+    )
 
 
 # ---------------------------------------------------------------------------
 # LLM agent
 # ---------------------------------------------------------------------------
 
-def llm_agent(client: OpenAI, obs: CreditAssessmentObservation) -> CreditAssessmentAction:
+def llm_agent(client: OpenAI, applicant_profile: str) -> CreditAssessmentAction:
     """Use LLM to assess a loan application and return an action."""
     try:
         completion = client.chat.completions.create(
             model=MODEL_NAME,
             messages=[
                 {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user", "content": obs.applicant_profile},
+                {"role": "user", "content": applicant_profile},
             ],
             response_format={"type": "json_object"},
         )
         raw = completion.choices[0].message.content or "{}"
         parsed = json.loads(raw)
     except Exception as exc:
+        print(f"[DEBUG] LLM request failed: {exc}", flush=True)
         return CreditAssessmentAction(
             decision=LoanDecision.REJECT,
             reasoning=f"LLM error fallback: {exc}",
@@ -150,9 +213,9 @@ def action_to_str(action: CreditAssessmentAction) -> str:
 # Episode runner
 # ---------------------------------------------------------------------------
 
-def run_episode(
-    env: CreditAssessmentEnvironment,
-    client: OpenAI,
+async def run_episode(
+    env: CreditAssessmentEnv,
+    llm_client: OpenAI,
     task_id: int,
     task_label: str,
     seed: int,
@@ -160,77 +223,86 @@ def run_episode(
     """Run one episode and emit [START] / [STEP]* / [END] to stdout."""
     rewards: List[float] = []
     steps_taken = 0
+    score = 0.0
     success = False
 
     log_start(task=task_label, env=BENCHMARK, model=MODEL_NAME)
 
     try:
-        obs = env.reset(seed=seed, task_id=task_id)
+        result = await env.reset(seed=seed, task_id=task_id)
 
-        step = 0
-        while not obs.done:
-            step += 1
-            action = llm_agent(client, obs)
-            obs = env.step(action)
+        for step in range(1, MAX_STEPS + 1):
+            if result.done:
+                break
 
-            reward = obs.reward
-            done = obs.done
+            action = llm_agent(llm_client, result.observation.applicant_profile)
+            result = await env.step(action)
+
+            reward = result.reward or 0.0
+            done = result.done
+            error = None
+
             rewards.append(reward)
             steps_taken = step
 
-            log_step(
-                step=step,
-                action=action_to_str(action),
-                reward=reward,
-                done=done,
-                error=None,
-            )
+            log_step(step=step, action=action_to_str(action), reward=reward, done=done, error=error)
 
             if done:
-                success = reward > 0.0
                 break
 
+        score = sum(rewards) / MAX_TOTAL_REWARD if MAX_TOTAL_REWARD > 0 else 0.0
+        score = min(max(score, 0.0), 1.0)
+        success = score >= SUCCESS_SCORE_THRESHOLD
+
     finally:
-        log_end(success=success, steps=steps_taken, rewards=rewards)
+        log_end(success=success, steps=steps_taken, score=score, rewards=rewards)
 
 
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
-def main() -> None:
+async def main() -> None:
     if not API_KEY:
         print("ERROR: No API key found. Set HF_TOKEN, API_KEY, or OPENAI_API_KEY.")
         sys.exit(1)
 
-    client = OpenAI(base_url=API_BASE_URL, api_key=API_KEY)
-    env = CreditAssessmentEnvironment()
+    llm_client = OpenAI(base_url=API_BASE_URL, api_key=API_KEY)
+    env = await CreditAssessmentEnv.from_docker_image(LOCAL_IMAGE_NAME, provider=SlowStartProvider())
 
-    # Determine which tasks to run
-    task_map = {str(v["name"]).lower().replace(" ", "-"): k for k, v in env.TASKS.items()}
-    task_map.update({str(k): k for k in env.TASKS})  # also allow "1", "2", "3"
+    try:
+        task_name_map = {v: k for k, v in TASKS.items()}
+        task_name_map.update({str(k): k for k in TASKS})
 
-    if TASK_NAME == "all":
-        task_ids = list(env.TASKS.keys())
-    else:
-        task_id = task_map.get(TASK_NAME.lower())
-        if task_id is None:
-            print(f"ERROR: Unknown TASK_NAME '{TASK_NAME}'. Use 'all', '1', '2', '3', "
-                  "'personal-loan', 'vehicle-loan', or 'home-loan'.")
-            sys.exit(1)
-        task_ids = [task_id]
+        if TASK_NAME == "all":
+            task_ids = list(TASKS.keys())
+        else:
+            task_id = task_name_map.get(TASK_NAME.lower())
+            if task_id is None:
+                print(
+                    f"ERROR: Unknown TASK_NAME '{TASK_NAME}'. "
+                    "Use 'all', '1', '2', '3', 'personal-loan', 'vehicle-loan', or 'home-loan'."
+                )
+                sys.exit(1)
+            task_ids = [task_id]
 
-    for task_id in task_ids:
-        task_label = env.TASKS[task_id]["name"].lower().replace(" ", "-")
-        for ep in range(EPISODES_PER_TASK):
-            run_episode(
-                env=env,
-                client=client,
-                task_id=task_id,
-                task_label=task_label,
-                seed=SEED + ep,
-            )
+        for task_id in task_ids:
+            task_label = TASKS[task_id]
+            for ep in range(EPISODES_PER_TASK):
+                await run_episode(
+                    env=env,
+                    llm_client=llm_client,
+                    task_id=task_id,
+                    task_label=task_label,
+                    seed=SEED + ep,
+                )
+
+    finally:
+        try:
+            await env.close()
+        except Exception as e:
+            print(f"[DEBUG] env.close() error (container cleanup): {e}", flush=True)
 
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())
