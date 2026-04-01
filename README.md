@@ -261,6 +261,13 @@ The `inference.py` at the project root runs an LLM agent against all 3 tasks usi
 | `BENCHMARK` | No | `credit-assessment` | Benchmark label used in log output |
 
 ```bash
+# Build the environment Docker image (one-time)
+docker build -t credit_assessment_env-env:latest .
+
+# Install dependencies
+uv sync
+
+# Run inference
 export API_BASE_URL="https://router.huggingface.co/v1"
 export HF_TOKEN="hf_..."
 export MODEL_NAME="meta-llama/Llama-3.1-8B-Instruct"
