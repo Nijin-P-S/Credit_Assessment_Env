@@ -154,16 +154,20 @@ def log_end(success: bool, steps: int, rewards: List[float]) -> None:
 # LLM agent
 # ---------------------------------------------------------------------------
 
-def llm_agent(client: OpenAI, applicant_profile: str) -> CreditAssessmentAction:
+async def llm_agent(client: OpenAI, applicant_profile: str) -> CreditAssessmentAction:
     """Use LLM to assess a loan application and return an action."""
     try:
-        completion = client.chat.completions.create(
-            model=MODEL_NAME,
-            messages=[
-                {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user", "content": applicant_profile},
-            ],
-            response_format={"type": "json_object"},
+        loop = asyncio.get_event_loop()
+        completion = await loop.run_in_executor(
+            None,
+            lambda: client.chat.completions.create(
+                model=MODEL_NAME,
+                messages=[
+                    {"role": "system", "content": SYSTEM_PROMPT},
+                    {"role": "user", "content": applicant_profile},
+                ],
+                response_format={"type": "json_object"},
+            ),
         )
         raw = completion.choices[0].message.content or "{}"
         parsed = json.loads(raw)
@@ -235,7 +239,7 @@ async def run_episode(
             if result.done:
                 break
 
-            action = llm_agent(llm_client, result.observation.applicant_profile)
+            action = await llm_agent(llm_client, result.observation.applicant_profile)
             result = await env.step(action)
 
             raw_reward = result.reward or 0.0
