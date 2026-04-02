@@ -22,7 +22,7 @@ STDOUT FORMAT
 
     [START] task=<task_name> env=<benchmark> model=<model_name>
     [STEP]  step=<n> action=<action_str> reward=<0.00> done=<true|false> error=<msg|null>
-    [END]   success=<true|false> steps=<n> score=<0.000> rewards=<r1,r2,...,rn>
+    [END]   success=<true|false> steps=<n> rewards=<r1,r2,...,rn>
 
   Rules:
     - One [START] line at episode begin.
@@ -35,8 +35,8 @@ STDOUT FORMAT
 
   Example:
     [START] task=personal-loan env=credit-assessment model=meta-llama/Llama-3.1-8B-Instruct
-    [STEP] step=1 action=approve reward=10.00 done=true error=null
-    [END] success=true steps=1 score=1.000 rewards=10.00
+    [STEP] step=1 action=approve reward=1.00 done=true error=null
+    [END] success=true steps=1 rewards=1.00
 
 Usage:
     export API_BASE_URL="https://router.huggingface.co/v1"
@@ -142,10 +142,10 @@ def log_step(step: int, action: str, reward: float, done: bool, error: Optional[
     )
 
 
-def log_end(success: bool, steps: int, score: float, rewards: List[float]) -> None:
+def log_end(success: bool, steps: int, rewards: List[float]) -> None:
     rewards_str = ",".join(f"{r:.2f}" for r in rewards)
     print(
-        f"[END] success={str(success).lower()} steps={steps} score={score:.3f} rewards={rewards_str}",
+        f"[END] success={str(success).lower()} steps={steps} rewards={rewards_str}",
         flush=True,
     )
 
@@ -222,8 +222,8 @@ async def run_episode(
 ) -> None:
     """Run one episode and emit [START] / [STEP]* / [END] to stdout."""
     rewards: List[float] = []
+    raw_rewards: List[float] = []
     steps_taken = 0
-    score = 0.0
     success = False
 
     log_start(task=task_label, env=BENCHMARK, model=MODEL_NAME)
@@ -238,24 +238,37 @@ async def run_episode(
             action = llm_agent(llm_client, result.observation.applicant_profile)
             result = await env.step(action)
 
-            reward = result.reward or 0.0
+            raw_reward = result.reward or 0.0
+            normalized = min(max(raw_reward / MAX_TOTAL_REWARD, 0.0), 1.0)
             done = result.done
             error = None
 
-            rewards.append(reward)
+            raw_rewards.append(raw_reward)
+            rewards.append(normalized)
             steps_taken = step
 
-            log_step(step=step, action=action_to_str(action), reward=reward, done=done, error=error)
+            log_step(step=step, action=action_to_str(action), reward=normalized, done=done, error=error)
 
             if done:
                 break
 
-        score = sum(rewards) / MAX_TOTAL_REWARD if MAX_TOTAL_REWARD > 0 else 0.0
-        score = min(max(score, 0.0), 1.0)
-        success = score >= SUCCESS_SCORE_THRESHOLD
+        # Apply grade() thresholds on total raw reward for episode score
+        total_raw = sum(raw_rewards)
+        if total_raw >= 10.0:
+            episode_grade = 1.0
+        elif total_raw >= 7.0:
+            episode_grade = 0.8
+        elif total_raw >= 3.0:
+            episode_grade = 0.5
+        elif total_raw >= 0:
+            episode_grade = 0.2
+        else:
+            episode_grade = 0.0
+
+        success = episode_grade >= SUCCESS_SCORE_THRESHOLD
 
     finally:
-        log_end(success=success, steps=steps_taken, score=score, rewards=rewards)
+        log_end(success=success, steps=steps_taken, rewards=[episode_grade])
 
 
 # ---------------------------------------------------------------------------

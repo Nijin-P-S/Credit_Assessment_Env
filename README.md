@@ -280,7 +280,7 @@ The script runs 10 episodes per task (seed 42) and emits structured stdout in th
 ```
 [START] task=personal-loan env=credit-assessment model=meta-llama/Llama-3.1-8B-Instruct
 [STEP] step=1 action=approve reward=10.00 done=true error=null
-[END] success=true steps=1 score=1.000 rewards=10.00
+[END] success=true steps=1 rewards=10.00
 ```
 
 It uses the standard `openai.OpenAI` client, so any OpenAI-compatible endpoint works — HuggingFace Inference, OpenAI API, Azure OpenAI, etc.
