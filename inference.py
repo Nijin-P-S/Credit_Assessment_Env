@@ -35,8 +35,8 @@ STDOUT FORMAT
 
   Example:
     [START] task=personal-loan env=credit-assessment model=meta-llama/Llama-3.1-8B-Instruct
-    [STEP] step=1 action=approve reward=1.00 done=true error=null
-    [END] success=true steps=1 rewards=1.00
+    [STEP] step=1 action=approve reward=10.00 done=true error=null
+    [END] success=true steps=1 rewards=10.00
 
 Usage:
     export API_BASE_URL="https://router.huggingface.co/v1"
@@ -95,8 +95,6 @@ BENCHMARK = os.getenv("BENCHMARK", "credit-assessment")
 EPISODES_PER_TASK = 10
 SEED = 42
 MAX_STEPS = 3
-MAX_TOTAL_REWARD = 10.0
-SUCCESS_SCORE_THRESHOLD = 0.1
 
 TASKS = {
     1: "personal-loan",
@@ -226,7 +224,6 @@ async def run_episode(
 ) -> None:
     """Run one episode and emit [START] / [STEP]* / [END] to stdout."""
     rewards: List[float] = []
-    raw_rewards: List[float] = []
     steps_taken = 0
     success = False
 
@@ -242,37 +239,22 @@ async def run_episode(
             action = await llm_agent(llm_client, result.observation.applicant_profile)
             result = await env.step(action)
 
-            raw_reward = result.reward or 0.0
-            normalized = min(max(raw_reward / MAX_TOTAL_REWARD, 0.0), 1.0)
+            reward = result.reward or 0.0
             done = result.done
             error = None
 
-            raw_rewards.append(raw_reward)
-            rewards.append(normalized)
+            rewards.append(reward)
             steps_taken = step
 
-            log_step(step=step, action=action_to_str(action), reward=normalized, done=done, error=error)
+            log_step(step=step, action=action_to_str(action), reward=reward, done=done, error=error)
 
             if done:
                 break
 
-        # Apply grade() thresholds on total raw reward for episode score
-        total_raw = sum(raw_rewards)
-        if total_raw >= 10.0:
-            episode_grade = 1.0
-        elif total_raw >= 7.0:
-            episode_grade = 0.8
-        elif total_raw >= 3.0:
-            episode_grade = 0.5
-        elif total_raw >= 0:
-            episode_grade = 0.2
-        else:
-            episode_grade = 0.0
-
-        success = episode_grade >= SUCCESS_SCORE_THRESHOLD
+        success = any(r > 0 for r in rewards)
 
     finally:
-        log_end(success=success, steps=steps_taken, rewards=[episode_grade])
+        log_end(success=success, steps=steps_taken, rewards=rewards)
 
 
 # ---------------------------------------------------------------------------
