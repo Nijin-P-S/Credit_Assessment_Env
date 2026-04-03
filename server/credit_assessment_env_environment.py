@@ -27,7 +27,7 @@ from .helpers import build_profile_text
 
 class CreditAssessmentEnvironment(Environment):
 
-    SUPPORTS_CONCURRENT_SESSIONS: bool = False
+    SUPPORTS_CONCURRENT_SESSIONS: bool = True
 
     TASKS = {
         1: {"name": "Personal Loan", "loan_type": "personal", "difficulty": "easy"},
