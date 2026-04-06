@@ -130,6 +130,18 @@ class CreditAssessmentEnvironment(Environment):
             return True
         return False
 
+    def _normalize_reward(self, reward: float) -> float:
+        """Normalize a raw reward to 0.0–1.0 using grade thresholds."""
+        if reward >= 10.0:
+            return 1.0
+        elif reward >= 7.0:
+            return 0.8
+        elif reward >= 3.0:
+            return 0.5
+        elif reward >= 0:
+            return 0.2
+        return 0.0
+
     def _build_observation(self, reward: float, done: bool) -> CreditAssessmentObservation:
         a = self._current_applicant
 
@@ -147,7 +159,7 @@ class CreditAssessmentEnvironment(Environment):
             rera_registered=a.get("rera_registered"),
             has_co_applicant=a.get("has_co_applicant"),
             task_id=self._current_task_id,
-            reward=reward,
+            reward=self._normalize_reward(reward),
             done=done,
         )
 
