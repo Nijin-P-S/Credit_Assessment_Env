@@ -115,18 +115,20 @@ Incomplete documents → `request_docs`. This is always the first check. No bank
 
 ## Reward Structure
 
-The reward function reflects the asymmetric cost structure of real banking:
+The reward function reflects the asymmetric cost structure of real banking. Internally, raw reward values drive the grading logic; the agent receives a **normalized reward (0.0–1.0)** in each observation.
 
-| Scenario | Reward | Rationale |
-|----------|--------|-----------|
-| Correct decision (matches ground truth) | **+10.0** | Ideal outcome |
-| Request docs when docs are incomplete | **+3.0** | Correct procedural step, partial credit |
-| Counter-offer catches high LTV (vehicle) | **+7.0** | Smart risk mitigation, near-correct |
-| Reject a good applicant | **-8.0** | Lost revenue, but recoverable |
-| Approve a bad applicant | **-15.0** | NPA risk — far more costly than lost revenue |
-| Approve non-RERA home loan | **-20.0** | Regulatory/legal risk — worst case for the bank |
-| Counter-offer without specifying amount | **-5.0** | Invalid action penalty |
-| Other wrong decisions | **-2.0** | Wrong but not catastrophic |
+| Scenario | Raw Reward | Normalized | Rationale |
+|----------|------------|------------|-----------|
+| Correct decision (matches ground truth) | **+10.0** | **1.0** | Ideal outcome |
+| Request docs when docs are incomplete | **+3.0** | **0.5** | Correct procedural step, partial credit |
+| Counter-offer catches high LTV (vehicle) | **+7.0** | **0.8** | Smart risk mitigation, near-correct |
+| Reject a good applicant | **-8.0** | **0.0** | Lost revenue, but recoverable |
+| Approve a bad applicant | **-15.0** | **0.0** | NPA risk — far more costly than lost revenue |
+| Approve non-RERA home loan | **-20.0** | **0.0** | Regulatory/legal risk — worst case for the bank |
+| Counter-offer without specifying amount | **-5.0** | **0.0** | Invalid action penalty |
+| Other wrong decisions | **-2.0** | **0.0** | Wrong but not catastrophic |
+
+Normalization thresholds: raw ≥ 10 → 1.0, ≥ 7 → 0.8, ≥ 3 → 0.5, ≥ 0 → 0.2, < 0 → 0.0.
 
 The key asymmetry: **approving a bad loan (-15) is penalized almost twice as hard as rejecting a good one (-8)**. This mirrors banking reality where NPA losses (principal + interest + recovery costs) far exceed the opportunity cost of a declined good customer.
 
@@ -279,8 +281,8 @@ The script runs 10 episodes per task (seed 42) and emits structured stdout in th
 
 ```
 [START] task=personal-loan env=credit-assessment model=meta-llama/Llama-3.1-8B-Instruct
-[STEP] step=1 action=approve reward=10.00 done=true error=null
-[END] success=true steps=1 rewards=10.00
+[STEP] step=1 action=approve reward=1.00 done=true error=null
+[END] success=true steps=1 rewards=1.00
 ```
 
 It uses the standard `openai.OpenAI` client, so any OpenAI-compatible endpoint works — HuggingFace Inference, OpenAI API, Azure OpenAI, etc.
