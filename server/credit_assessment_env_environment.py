@@ -111,17 +111,9 @@ class CreditAssessmentEnvironment(Environment):
                 self._current_applicant["ltv_ratio"] = round(new_amount / collateral, 2)
 
     def grade(self) -> float:
-        """Normalised score (0.0–1.0) based on cumulative episode reward."""
-        r = self._total_reward
-        if r >= 10.0:
-            return 0.99
-        elif r >= 7.0:
-            return 0.8
-        elif r >= 3.0:
-            return 0.5
-        elif r >= 0:
-            return 0.2
-        return 0.01
+        """Normalised score strictly in (0, 1) — average per-step reward."""
+        steps = max(self._state.step_count, 1)
+        return self._total_reward / steps
 
     def _is_done(self, action: CreditAssessmentAction) -> bool:
         if self._state.step_count >= self.MAX_STEPS_PER_EPISODE:
@@ -129,18 +121,6 @@ class CreditAssessmentEnvironment(Environment):
         if action.decision in [LoanDecision.APPROVE, LoanDecision.REJECT]:
             return True
         return False
-
-    def _normalize_reward(self, reward: float) -> float:
-        """Normalize a raw reward to strictly (0.0, 1.0) using grade thresholds."""
-        if reward >= 10.0:
-            return 0.99
-        elif reward >= 7.0:
-            return 0.8
-        elif reward >= 3.0:
-            return 0.5
-        elif reward >= 0:
-            return 0.2
-        return 0.01
 
     def _build_observation(self, reward: float, done: bool) -> CreditAssessmentObservation:
         a = self._current_applicant
@@ -159,7 +139,7 @@ class CreditAssessmentEnvironment(Environment):
             rera_registered=a.get("rera_registered"),
             has_co_applicant=a.get("has_co_applicant"),
             task_id=self._current_task_id,
-            reward=self._normalize_reward(reward),
+            reward=reward,
             done=done,
         )
 

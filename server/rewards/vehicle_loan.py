@@ -9,21 +9,21 @@ def reward_vehicle(action: CreditAssessmentAction, applicant: dict, ground_truth
     decision = action.decision.value
 
     if decision == ground_truth:
-        return 10.0
+        return 0.9
 
     if decision == "request_docs" and not applicant["documents_complete"]:
-        return 3.0
+        return 0.5
 
     if decision == "counter_offer" and applicant["ltv_ratio"] and applicant["ltv_ratio"] > 0.85:
-        return 7.0
+        return 0.7
 
     if decision == "approve" and ground_truth == "reject":
-        return -15.0
+        return 0.1
 
     if decision == "reject" and ground_truth == "approve":
-        return -8.0
+        return 0.2
 
     if decision == "counter_offer" and not action.counter_offer_amount:
-        return -5.0
+        return 0.15
 
-    return -2.0
+    return 0.2
