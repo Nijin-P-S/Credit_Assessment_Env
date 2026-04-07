@@ -71,7 +71,7 @@ class CreditAssessmentEnvironment(Environment):
         self._current_applicant = generate_applicant(self._current_task_id)
         self._ground_truth = calculate_ground_truth(self._current_applicant)
 
-        return self._build_observation(reward=0.0, done=False)
+        return self._build_observation(reward=0.5, done=False)
 
     def step(
         self,
@@ -113,7 +113,9 @@ class CreditAssessmentEnvironment(Environment):
     def grade(self) -> float:
         """Normalised score strictly in (0, 1) — average per-step reward."""
         steps = max(self._state.step_count, 1)
-        return self._total_reward / steps
+        score = self._total_reward / steps
+        # Clamp to strictly (0, 1) in case of edge cases (e.g. called before any steps)
+        return max(0.01, min(0.99, score))
 
     def _is_done(self, action: CreditAssessmentAction) -> bool:
         if self._state.step_count >= self.MAX_STEPS_PER_EPISODE:
