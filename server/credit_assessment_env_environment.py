@@ -114,14 +114,14 @@ class CreditAssessmentEnvironment(Environment):
         """Normalised score (0.0–1.0) based on cumulative episode reward."""
         r = self._total_reward
         if r >= 10.0:
-            return 1.0
+            return 0.99
         elif r >= 7.0:
             return 0.8
         elif r >= 3.0:
             return 0.5
         elif r >= 0:
             return 0.2
-        return 0.0
+        return 0.01
 
     def _is_done(self, action: CreditAssessmentAction) -> bool:
         if self._state.step_count >= self.MAX_STEPS_PER_EPISODE:
@@ -131,16 +131,16 @@ class CreditAssessmentEnvironment(Environment):
         return False
 
     def _normalize_reward(self, reward: float) -> float:
-        """Normalize a raw reward to 0.0–1.0 using grade thresholds."""
+        """Normalize a raw reward to strictly (0.0, 1.0) using grade thresholds."""
         if reward >= 10.0:
-            return 1.0
+            return 0.99
         elif reward >= 7.0:
             return 0.8
         elif reward >= 3.0:
             return 0.5
         elif reward >= 0:
             return 0.2
-        return 0.0
+        return 0.01
 
     def _build_observation(self, reward: float, done: bool) -> CreditAssessmentObservation:
         a = self._current_applicant
