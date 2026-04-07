@@ -56,6 +56,23 @@ from openai import OpenAI
 from openenv.core.containers.runtime.providers import LocalDockerProvider
 
 
+def rebuild_docker_image(image_name: str) -> None:
+    """Remove existing image and rebuild from current Dockerfile."""
+    import subprocess
+    repo_dir = os.path.dirname(os.path.abspath(__file__))
+    # Remove existing image (ignore errors if it doesn't exist)
+    subprocess.run(["docker", "rmi", "-f", image_name], capture_output=True)
+    print(f"[DEBUG] Building Docker image {image_name} from {repo_dir}", flush=True)
+    result = subprocess.run(
+        ["docker", "build", "-t", image_name, repo_dir],
+        capture_output=True, text=True
+    )
+    if result.returncode != 0:
+        print(f"[DEBUG] Docker build failed:\n{result.stderr}", flush=True)
+        raise RuntimeError(f"Docker build failed: {result.stderr}")
+    print(f"[DEBUG] Docker image built successfully.", flush=True)
+
+
 class SlowStartProvider(LocalDockerProvider):
     """Maps to container port 7860 (Dockerfile CMD) and uses a longer ready-timeout."""
 
@@ -265,6 +282,8 @@ async def main() -> None:
     if not API_KEY:
         print("ERROR: No API key found. Set HF_TOKEN, API_KEY, or OPENAI_API_KEY.")
         sys.exit(1)
+
+    rebuild_docker_image(LOCAL_IMAGE_NAME)
 
     llm_client = OpenAI(base_url=API_BASE_URL, api_key=API_KEY)
     env = await CreditAssessmentEnv.from_docker_image(LOCAL_IMAGE_NAME, provider=SlowStartProvider())
