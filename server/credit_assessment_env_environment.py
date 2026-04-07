@@ -111,11 +111,12 @@ class CreditAssessmentEnvironment(Environment):
                 self._current_applicant["ltv_ratio"] = round(new_amount / collateral, 2)
 
     def grade(self) -> float:
-        """Normalised score strictly in (0, 1) — average per-step reward."""
+        """Normalised score strictly in (0, 1) — maps avg reward [-20, +10] → [0.01, 0.99]."""
         steps = max(self._state.step_count, 1)
-        score = self._total_reward / steps
-        # Clamp to strictly (0, 1) in case of edge cases (e.g. called before any steps)
-        return max(0.01, min(0.99, score))
+        avg = self._total_reward / steps
+        # Raw reward range: worst=-20 (missed RERA), best=+10 (correct decision)
+        normalized = (avg - (-20.0)) / (10.0 - (-20.0))  # → [0, 1]
+        return max(0.01, min(0.99, normalized))
 
     def _is_done(self, action: CreditAssessmentAction) -> bool:
         if self._state.step_count >= self.MAX_STEPS_PER_EPISODE:

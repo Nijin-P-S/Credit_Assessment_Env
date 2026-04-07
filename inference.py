@@ -272,7 +272,9 @@ async def run_episode(
 
     finally:
         avg_reward = sum(rewards) / max(len(rewards), 1)
-        score = max(0.01, min(0.99, avg_reward))
+        # Normalize from raw reward range [-20, +10] to [0.01, 0.99]
+        normalized = (avg_reward - (-20.0)) / (10.0 - (-20.0))
+        score = max(0.01, min(0.99, normalized))
         log_end(success=success, steps=steps_taken, score=score, rewards=rewards)
 
 

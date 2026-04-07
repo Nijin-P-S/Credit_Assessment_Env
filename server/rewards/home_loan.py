@@ -9,21 +9,27 @@ def reward_home(action: CreditAssessmentAction, applicant: dict, ground_truth: s
     decision = action.decision.value
 
     if decision == ground_truth:
-        return 0.9
+        return 10.0
 
     if decision == "request_docs" and not applicant["documents_complete"]:
-        return 0.5
+        return 2.0
 
     if decision == "approve" and applicant["rera_registered"] is False:
-        return 0.1
+        return -20.0
+
+    if decision in ("approve", "reject") and ground_truth == "request_docs":
+        return -8.0
+
+    if decision in ("approve", "reject") and ground_truth == "counter_offer":
+        return -8.0
 
     if decision == "approve" and ground_truth == "reject":
-        return 0.1
+        return -15.0
 
     if decision == "reject" and ground_truth == "approve":
-        return 0.2
+        return -5.0
 
     if decision == "counter_offer" and not action.counter_offer_amount:
-        return 0.15
+        return -3.0
 
-    return 0.2
+    return -2.0
