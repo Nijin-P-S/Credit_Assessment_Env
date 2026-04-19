@@ -49,7 +49,15 @@ As the agent masters simple cases, adversarial training kicks in. Trap cases app
 
 The agent learns to *compute*, not just pattern-match. It calculates LTV from raw property values. It applies tiered RBI limits based on loan amount. It stops trusting "everything looks good" and starts checking every criterion.
 
-### Act 4: The Result
+### Act 4: The Agent Becomes Its Own Adversary
+
+Something unexpected happens. After each adversarial round, the trained model is asked to switch roles — instead of evaluating loans, it designs them. *"Given where you keep failing, create a loan application that would trick an AI loan officer."*
+
+Early rounds produce weak traps. The model doesn't yet know enough to design genuinely hard cases. But by round 3, it's generating borderline profiles it knows it finds difficult — CIBIL 699 with ₹8L income, home loans with LTV exactly at the tier boundary. Cases rule-based generation would never think to create.
+
+The loop closes: the model's failures inform what it trains on next. The better it gets, the harder it makes its own tests.
+
+### Act 5: The Result
 
 Personal Loan accuracy: **57% → 86%** — a 29% improvement. Home Loans improved by 17%. But Vehicle Loans actually degraded.
 
@@ -67,9 +75,9 @@ This is self-improvement in action: an environment that exposes its own weakness
 
 Credit Assessment Environment is built for recursive skill amplification:
 
-- **Curriculum learning**: Easy → Medium → Hard progression as mastery improves
-- **Adversarial self-play**: 10 trap strategies targeting specific LLM weaknesses
-- **Adaptive training**: The system identifies what the agent fails at and generates targeted cases
+- **Performance-gated curriculum**: Easy → Medium → Hard progression gated by accuracy — the model earns advancement (65% threshold), not just completes a fixed number of steps
+- **Adversarial self-play**: `AdversarialTracker` identifies which of 10 trap strategies the model fails at most and weights the next training round toward those weaknesses
+- **Self-generated challenges**: After each adversarial round, the model being trained is prompted to design its own trap cases targeting its identified weaknesses. Those cases feed into the next round's training data — closing a recursive loop where the better the model gets, the harder it makes its own training
 
 ### Secondary: Theme #3 — World Modeling / Professional Tasks
 
@@ -383,14 +391,17 @@ python train_grpo.py
 
 | Parameter | Default | Description |
 |-----------|---------|-------------|
-| `model_name` | `Qwen/Qwen2.5-1.5B-Instruct` | Base model to fine-tune |
+| `model_name` | `Qwen/Qwen2.5-7B-Instruct` | Base model to fine-tune |
 | `num_train_samples` | 500 | Training dataset size |
 | `num_generations` | 4 | GRPO completions per prompt |
 | `use_peft` | True | Use LoRA for memory efficiency |
 | `num_train_epochs` | 3 | Training epochs |
-| `use_curriculum` | True | Enable curriculum learning (easy → medium → hard) |
+| `use_curriculum` | True | Enable performance-gated curriculum (easy → medium → hard) |
+| `phase_mastery_threshold` | 0.65 | Accuracy required to advance to next curriculum phase |
+| `max_phase_retries` | 2 | Max extra attempts per phase before forced advancement |
 | `use_adversarial` | True | Enable adversarial self-play training |
 | `adversarial_rounds` | 3 | Number of adversarial training rounds |
+| `use_self_generation` | True | Model generates its own hard cases after each adversarial round |
 
 ### Training Modes
 
@@ -425,21 +436,33 @@ config.use_curriculum = True
 config.use_adversarial = False
 ```
 
-#### 4. Adversarial Self-Play with LLM Designer (Advanced)
-The most advanced mode — uses Claude/GPT to design novel trap cases:
+#### 4. Full Recursive Self-Improvement (Default — Recommended)
 
-1. **Evaluate** on adversarial cases (edge cases designed to trick LLMs)
-2. **Identify** which strategies the model fails at most
-3. **Generate** targeted training data focusing on weaknesses
-4. **Train** on hard cases
-5. **Repeat** for multiple rounds
+The complete pipeline. After curriculum learning, adversarial self-play runs with the model acting as its own challenge generator:
 
-This creates a self-improvement loop where training adapts to the model's weaknesses.
+1. **Evaluate** model on adversarial cases, record per-strategy failure rates in `AdversarialTracker`
+2. **Identify** weakest strategy (highest failure rate)
+3. **Generate** rule-based cases targeting that weakness (70%) + hard cases for balance (30%)
+4. **Mix in** self-generated cases carried from the previous round (capped at 30% of batch)
+5. **Train** on the combined dataset
+6. **Self-generate**: prompt the trained model to design trap cases targeting its own weaknesses — carry these into step 4 of the next round
+7. **Repeat**
+
+The self-generation loop is what makes this recursive: the model's own failure patterns shape what it trains on next. Early rounds produce weak self-generated cases; later rounds produce genuinely tricky ones because the model has internalized enough rules to know where edge cases live.
+
+**Safeguards on self-generated cases:**
+- Required field validation (loan_type, credit_score, monthly_income, foir, employment_years, loan_amount, documents_complete)
+- `loan_type` must be one of `personal`, `vehicle`, `home` — invalid outputs are discarded
+- Missing vehicle/home fields (collateral_value, ltv_ratio, rera_registered) are auto-filled with safe defaults
+- Ground truth is always computed via `calculate_ground_truth()` — never trusted from the model's own output
+- Up to 4× generation attempts per requested case; failed parses are silently skipped
+- Self-generated cases capped at 30% of each training batch to prevent distribution collapse
 
 ```python
 # In train_grpo.py, set:
-config.use_curriculum = True    # Start with curriculum
-config.use_adversarial = True   # Then adversarial refinement
+config.use_curriculum = True
+config.use_adversarial = True
+config.use_self_generation = True   # Default: True
 config.adversarial_rounds = 3
 config.adversarial_samples = 100
 ```
@@ -462,15 +485,19 @@ config.adversarial_samples = 100
 1. **Generates synthetic loan applications** with known ground truth decisions
 2. **Computes rewards** using the environment's reward function (same asymmetric penalties)
 3. **Trains with GRPO** to maximize reward while maintaining output quality
-4. **Evaluates** before/after accuracy on held-out samples
+4. **Gates phase advancement** on measured accuracy — the model repeats a phase (up to 2 retries with fresh samples) if it hasn't reached 65% before moving to a harder difficulty
+5. **Tracks per-strategy failure rates** via `AdversarialTracker` and focuses adversarial rounds on the model's weakest areas
+6. **Prompts the model to generate its own hard cases** after each adversarial round — verified against deterministic ground truth before use as training data
+7. **Evaluates** before/after accuracy on held-out samples
 
 ### Expected Results
 
 | Training Mode | Baseline | Trained | Improvement |
 |---------------|----------|---------|-------------|
 | Standard | ~60% | ~80% | +20% |
-| Curriculum | ~60% | ~82% | +22% |
+| Curriculum (performance-gated) | ~60% | ~82% | +22% |
 | Curriculum + Adversarial | ~60% | ~85%+ | +25%+ |
+| Full pipeline (+ self-generation) | ~60% | ~88%+ | +28%+ |
 
 ---
 
