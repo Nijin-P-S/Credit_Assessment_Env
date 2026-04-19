@@ -47,6 +47,10 @@ def generate_personal_loan() -> dict:
 
     return {
         "loan_type": "personal",
+        "purpose": random.choice([
+            "home renovation", "medical expenses", "wedding",
+            "debt consolidation", "travel", "education fees",
+        ]),
         "credit_score": credit_score,
         "monthly_income": monthly_income,
         "foir": foir,

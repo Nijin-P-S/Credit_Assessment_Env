@@ -71,6 +71,10 @@ def generate_vehicle_loan() -> dict:
 
     return {
         "loan_type": "vehicle",
+        "vehicle_type": random.choice([
+            "new sedan", "new SUV", "new hatchback",
+            "used sedan (2 years old)", "used SUV (3 years old)",
+        ]),
         "credit_score": credit_score,
         "monthly_income": monthly_income,
         "foir": foir,

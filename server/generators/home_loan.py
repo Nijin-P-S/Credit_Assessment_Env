@@ -121,6 +121,14 @@ def generate_home_loan() -> dict:
 
     return {
         "loan_type": "home",
+        "property_type": random.choice([
+            "2BHK apartment", "3BHK apartment", "independent villa",
+            "under-construction flat", "ready-to-move flat", "builder floor",
+        ]),
+        "construction_stage": random.choice([
+            "Foundation complete", "Superstructure in progress",
+            "Ready for possession", "Finishing stage",
+        ]),
         "credit_score": credit_score,
         "monthly_income": monthly_income,
         "foir": foir,

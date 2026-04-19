@@ -1,25 +1,3 @@
-import random
-
-_PERSONAL_PURPOSES = [
-    "home renovation", "medical expenses", "wedding",
-    "debt consolidation", "travel", "education fees",
-]
-
-_VEHICLE_TYPES = [
-    "new sedan", "new SUV", "new hatchback",
-    "used sedan (2 years old)", "used SUV (3 years old)",
-]
-
-_PROPERTY_TYPES = [
-    "2BHK apartment", "3BHK apartment", "independent villa",
-    "under-construction flat", "ready-to-move flat", "builder floor",
-]
-
-_CONSTRUCTION_STAGES = [
-    "Foundation complete", "Superstructure in progress",
-    "Ready for possession", "Finishing stage",
-]
-
 
 def build_profile_text(a: dict) -> str:
     """Build a realistic, narrative-style loan application for LLM reasoning."""
@@ -36,7 +14,7 @@ def build_profile_text(a: dict) -> str:
 
 
 def _build_personal_profile(a: dict) -> str:
-    purpose = random.choice(_PERSONAL_PURPOSES)
+    purpose = a["purpose"]
 
     text = f"""LOAN APPLICATION — PERSONAL LOAN
 {'=' * 55}
@@ -62,7 +40,7 @@ ACTIONS: approve | reject | request_docs | counter_offer"""
 
 
 def _build_vehicle_profile(a: dict) -> str:
-    vehicle = random.choice(_VEHICLE_TYPES)
+    vehicle = a["vehicle_type"]
 
     text = f"""LOAN APPLICATION — VEHICLE LOAN
 {'=' * 55}
@@ -92,8 +70,8 @@ ACTIONS: approve | reject | request_docs | counter_offer"""
 
 
 def _build_home_profile(a: dict) -> str:
-    prop_type = random.choice(_PROPERTY_TYPES)
-    construction = random.choice(_CONSTRUCTION_STAGES)
+    prop_type = a["property_type"]
+    construction = a["construction_stage"]
 
     co_app_text = ""
     if a.get("has_co_applicant"):
