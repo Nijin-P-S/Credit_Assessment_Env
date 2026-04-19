@@ -289,6 +289,49 @@ It uses the standard `openai.OpenAI` client, so any OpenAI-compatible endpoint w
 
 ![Inference Results](assets/inference_sample.png)
 
+## Training with GRPO
+
+Train an LLM to make accurate loan decisions using Group Relative Policy Optimization (GRPO) from HuggingFace TRL.
+
+### Quick Start (Colab)
+
+Open the notebook in Google Colab:
+
+[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/iamnijin/credit-assessment-env/blob/main/train_grpo_colab.ipynb)
+
+### Local Training
+
+```bash
+# Install training dependencies
+pip install -r requirements-train.txt
+
+# Run training
+python train_grpo.py
+```
+
+### Training Configuration
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `model_name` | `Qwen/Qwen2.5-1.5B-Instruct` | Base model to fine-tune |
+| `num_train_samples` | 500 | Training dataset size |
+| `num_generations` | 4 | GRPO completions per prompt |
+| `use_peft` | True | Use LoRA for memory efficiency |
+| `num_train_epochs` | 3 | Training epochs |
+
+### What the Training Does
+
+1. **Generates synthetic loan applications** with known ground truth decisions
+2. **Computes rewards** using the environment's reward function (same asymmetric penalties)
+3. **Trains with GRPO** to maximize reward while maintaining output quality
+4. **Evaluates** before/after accuracy on held-out samples
+
+### Expected Results
+
+| Model | Baseline | Trained | Improvement |
+|-------|----------|---------|-------------|
+| Qwen2.5-1.5B | ~60% | ~80%+ | +20% |
+
 ## Building & Running
 
 ```bash

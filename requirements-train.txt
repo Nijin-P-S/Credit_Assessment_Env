@@ -1,0 +1,20 @@
+# Training dependencies for Credit Assessment Environment
+# Install with: pip install -r requirements-train.txt
+
+# Core ML
+trl>=0.17.0
+transformers>=4.50.0
+datasets>=2.18.0
+accelerate>=0.30.0
+peft>=0.10.0
+bitsandbytes>=0.43.0
+torch>=2.0.0
+
+# Environment
+openenv-core[core]>=0.2.1
+
+# Visualization
+matplotlib>=3.7.0
+
+# Optional: Logging
+# wandb>=0.16.0
