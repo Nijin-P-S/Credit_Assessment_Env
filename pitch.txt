@@ -331,6 +331,8 @@ DURING PRESENTATION:
 [ ] Interactive demo if time permits
 [ ] End with business case (banks need this)
 
+
+
 ================================================================================
 REMEMBER: The winner documented their failures as discoveries.
 Your Vehicle Loan degradation IS your discovery. Own it.
