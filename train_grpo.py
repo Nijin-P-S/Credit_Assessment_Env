@@ -45,7 +45,6 @@ from train_utils import (
     generate_adversarial_case,
     AdversarialTracker,
     ADVERSARIAL_STRATEGIES,
-    LLMAdversarialDesigner,
 )
 
 
@@ -56,7 +55,7 @@ from train_utils import (
 @dataclass
 class TrainConfig:
     # Model
-    model_name: str = "Qwen/Qwen2.5-1.5B-Instruct"  # Small model for fast iteration
+    model_name: str = "Qwen/Qwen2.5-7B-Instruct"
     
     # Dataset
     num_train_samples: int = 500  # Number of training samples to generate
@@ -65,16 +64,14 @@ class TrainConfig:
     # Curriculum Learning
     use_curriculum: bool = True  # Enable 3-phase curriculum learning (easy → medium → hard)
     samples_per_phase: int = 200  # Samples per curriculum phase (used if use_curriculum=True)
+    phase_mastery_threshold: float = 0.65  # Min accuracy required to advance to next phase
+    max_phase_retries: int = 2  # Max extra training attempts per phase before forced advance
     
     # Adversarial Training
     use_adversarial: bool = True  # Enable adversarial training phase after curriculum
     adversarial_samples: int = 100  # Samples per adversarial round
     adversarial_rounds: int = 3  # Number of adversarial training rounds
-    
-    # LLM Adversarial Designer (requires API key)
-    use_llm_adversarial: bool = False  # Use LLM to generate adversarial cases
-    llm_provider: str = "anthropic"  # "anthropic" or "openai"
-    llm_model: str = None  # Model name (default: claude-3-haiku or gpt-4o-mini)
+    use_self_generation: bool = True  # Model generates its own hard cases each round
     
     # GRPO settings
     num_generations: int = 4     # Completions per prompt for GRPO advantage calculation
@@ -130,6 +127,119 @@ Key guidelines:
 IMPORTANT: Check EVERY criterion carefully. A single failing criterion means rejection, even if everything else is perfect.
 
 Respond ONLY with valid JSON. No markdown, no explanation outside the JSON."""
+
+SELF_GEN_PROMPT = """You are a loan underwriting trainer designing test cases for an AI loan officer.
+
+Design ONE loan application that looks approvable at first glance but contains exactly one hidden flaw that should trigger rejection or a different decision.
+
+The model currently struggles most with:
+{weaknesses}
+
+Output ONLY a JSON object — no explanation, no markdown:
+{{
+    "loan_type": "personal" | "vehicle" | "home",
+    "credit_score": <integer 650-850>,
+    "monthly_income": <integer 50000-1000000>,
+    "foir": <float 0.15-0.60>,
+    "employment_years": <integer 0-20>,
+    "loan_amount": <integer 100000-20000000>,
+    "documents_complete": true | false,
+    "collateral_value": <integer, required for vehicle/home>,
+    "ltv_ratio": <float 0.5-0.95, required for vehicle/home>,
+    "rera_registered": true | false (required for home),
+    "has_co_applicant": true | false,
+    "trap_type": "<one line: what is the hidden flaw>"
+}}"""
+
+
+def self_generate_adversarial_cases(trainer, tracker, num_cases: int) -> list:
+    """
+    Prompt the model being trained to generate its own hard cases.
+
+    The model uses its internalized knowledge of loan rules to design traps —
+    cases it believes are tricky. These are then verified with calculate_ground_truth
+    and fed back as training data in the next round, closing the self-improvement loop.
+    """
+    model = trainer.model
+    tokenizer = trainer.processing_class
+
+    weakness_summary = tracker.get_summary()
+    top_weaknesses = sorted(weakness_summary.items(), key=lambda x: -x[1].get("failures", 0))[:3]
+    weakness_str = "\n".join(
+        f"- {s}: {d['failures']} failures" for s, d in top_weaknesses
+    ) if top_weaknesses else "- No weakness data yet — generate varied trap cases"
+
+    prompt_text = SELF_GEN_PROMPT.format(weaknesses=weakness_str)
+    messages = [{"role": "user", "content": prompt_text}]
+    prompt = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+    inputs = tokenizer(prompt, return_tensors="pt").to(model.device)
+
+    samples = []
+    attempts = 0
+    max_attempts = num_cases * 4
+
+    model.eval()
+    with torch.no_grad():
+        while len(samples) < num_cases and attempts < max_attempts:
+            attempts += 1
+            try:
+                outputs = model.generate(
+                    **inputs,
+                    max_new_tokens=300,
+                    do_sample=True,
+                    temperature=0.9,
+                    pad_token_id=tokenizer.pad_token_id,
+                )
+                response = tokenizer.decode(
+                    outputs[0][inputs.input_ids.shape[1]:],
+                    skip_special_tokens=True,
+                ).strip()
+
+                if "```json" in response:
+                    response = response.split("```json")[1].split("```")[0]
+                elif "```" in response:
+                    response = response.split("```")[1].split("```")[0]
+
+                case = json.loads(response.strip())
+
+                required = ["loan_type", "credit_score", "monthly_income", "foir",
+                            "employment_years", "loan_amount", "documents_complete"]
+                if not all(k in case for k in required):
+                    continue
+                if case["loan_type"] not in ("personal", "vehicle", "home"):
+                    continue
+
+                if case["loan_type"] in ("vehicle", "home") and "collateral_value" not in case:
+                    case["collateral_value"] = int(case["loan_amount"] * 1.3)
+                    case["ltv_ratio"] = case["loan_amount"] / case["collateral_value"]
+                if case["loan_type"] == "home":
+                    case.setdefault("rera_registered", True)
+                    case.setdefault("has_co_applicant", False)
+                    case.setdefault("property_type", "apartment")
+                if case["loan_type"] == "vehicle":
+                    case.setdefault("vehicle_type", "sedan")
+
+                gt = calculate_ground_truth(case)
+                if gt is None:
+                    continue
+
+                profile = build_profile_text(case)
+                samples.append({
+                    "prompt": [
+                        {"role": "system", "content": SYSTEM_PROMPT},
+                        {"role": "user", "content": profile},
+                    ],
+                    "ground_truth": gt,
+                    "task_id": {"personal": 1, "vehicle": 2, "home": 3}[case["loan_type"]],
+                    "loan_type": case["loan_type"],
+                    "applicant_data": json.dumps(case),
+                    "adversarial_strategy": case.get("trap_type", "self_generated"),
+                })
+            except Exception:
+                continue
+
+    model.train()
+    return samples
 
 
 # =============================================================================
@@ -532,71 +642,85 @@ def evaluate_model(trainer: GRPOTrainer, num_samples: int = 20) -> dict:
 
 def train_with_curriculum(config: TrainConfig):
     """
-    Train using 3-phase curriculum learning.
-    
-    Phase 1 (Easy): Only obvious good/bad cases
-    Phase 2 (Medium): Adds borderline cases
-    Phase 3 (Hard): Adds all trap cases
+    Train using 3-phase curriculum learning with performance-gated advancement.
+
+    Each phase repeats up to max_phase_retries times if accuracy stays below
+    phase_mastery_threshold, ensuring the model earns advancement rather than
+    advancing on a fixed timer. The final phase has no gate since there is
+    nowhere left to advance.
     """
     print("\n" + "="*60)
-    print("CURRICULUM LEARNING: 3-Phase Training")
+    print("CURRICULUM LEARNING: Performance-Gated 3-Phase Training")
     print("="*60)
-    
+    print(f"  Mastery threshold: {config.phase_mastery_threshold*100:.0f}%")
+    print(f"  Max retries per phase: {config.max_phase_retries}")
+
+    # (difficulty, label, mastery_threshold)
+    # Last phase has no gate — model trains through it regardless
     phases = [
-        ("easy", "Phase 1: Learning Basics (Easy Cases)"),
-        ("medium", "Phase 2: Refining (Medium Cases)"),
-        ("hard", "Phase 3: Mastering (Hard Cases + Traps)"),
+        ("easy",   "Phase 1: Learning Basics (Easy Cases)",        config.phase_mastery_threshold),
+        ("medium", "Phase 2: Refining (Medium Cases)",             config.phase_mastery_threshold),
+        ("hard",   "Phase 3: Mastering (Hard Cases + Traps)",      0.0),
     ]
-    
+
     trainer = None
     phase_results = []
-    
-    for phase_idx, (difficulty, phase_name) in enumerate(phases):
+
+    for phase_idx, (difficulty, phase_name, threshold) in enumerate(phases):
         print(f"\n{'='*60}")
         print(f"{phase_name}")
         print(f"{'='*60}")
-        
-        # Generate dataset for this phase
-        train_dataset = generate_dataset(
-            config.samples_per_phase, 
-            seed=42 + phase_idx,
-            difficulty=difficulty
-        )
+
         eval_dataset = generate_dataset(
             config.num_eval_samples,
             seed=123,
-            difficulty="all"  # Always evaluate on all difficulties
+            difficulty="all"
         )
-        
-        print(f"  Samples: {len(train_dataset)}")
-        print(f"  Difficulty: {difficulty}")
-        
-        # Create or update trainer
-        if trainer is None:
-            # First phase: create new trainer
-            trainer = create_trainer_with_datasets(config, train_dataset, eval_dataset)
+
+        phase_acc = 0.0
+        for attempt in range(config.max_phase_retries + 1):
+            if attempt > 0:
+                print(f"\n  [Retry {attempt}/{config.max_phase_retries}] "
+                      f"Accuracy {phase_acc*100:.1f}% < {threshold*100:.0f}% threshold — "
+                      f"repeating phase with fresh samples...")
+
+            train_dataset = generate_dataset(
+                config.samples_per_phase,
+                seed=42 + phase_idx * 100 + attempt,
+                difficulty=difficulty
+            )
+            print(f"  Samples: {len(train_dataset)}  |  Difficulty: {difficulty}"
+                  + (f"  |  Attempt: {attempt+1}/{config.max_phase_retries+1}" if config.max_phase_retries > 0 else ""))
+
+            if trainer is None:
+                trainer = create_trainer_with_datasets(config, train_dataset, eval_dataset)
+            else:
+                trainer.train_dataset = train_dataset
+                trainer.eval_dataset = eval_dataset
+
+            print(f"\n  Training...")
+            trainer.train()
+
+            print(f"\n  Evaluating...")
+            phase_acc = quick_evaluate(trainer, eval_dataset, num_samples=10)
+            print(f"  Accuracy: {phase_acc*100:.1f}%"
+                  + (f" (threshold: {threshold*100:.0f}%)" if threshold > 0 else " (no gate on final phase)"))
+
+            if threshold == 0.0 or phase_acc >= threshold:
+                if threshold > 0:
+                    print(f"  Mastery achieved — advancing to next phase.")
+                break
         else:
-            # Subsequent phases: update datasets, keep model
-            trainer.train_dataset = train_dataset
-            trainer.eval_dataset = eval_dataset
-        
-        # Train this phase
-        print(f"\n  Training {phase_name}...")
-        trainer.train()
-        
-        # Quick evaluation after each phase
-        print(f"\n  Evaluating after {phase_name}...")
-        phase_acc = quick_evaluate(trainer, eval_dataset, num_samples=10)
+            print(f"  Threshold not reached after {config.max_phase_retries+1} attempts — advancing anyway.")
+
         phase_results.append((phase_name, phase_acc))
-        print(f"  Accuracy: {phase_acc*100:.1f}%")
-    
-    # Print curriculum summary
+
     print("\n" + "="*60)
     print("CURRICULUM LEARNING RESULTS")
     print("="*60)
     for phase_name, acc in phase_results:
         print(f"  {phase_name}: {acc*100:.1f}%")
-    
+
     return trainer, phase_results
 
 
@@ -783,158 +907,107 @@ def evaluate_adversarial(trainer, tracker: AdversarialTracker, num_samples: int 
 def train_with_adversarial(config: TrainConfig, trainer=None):
     """
     Adversarial self-play training loop.
-    
-    This is the key differentiator for Theme #4 (Self-Improvement):
-    1. Evaluate model on adversarial cases
-    2. Identify weaknesses
-    3. Generate targeted training data
-    4. Train on hard cases
-    5. Repeat
-    
-    Supports two modes:
-    - Rule-based (default): Uses predefined adversarial strategies
-    - LLM-powered: Uses Claude/GPT to design novel trap cases
-    
-    Args:
-        config: Training configuration
-        trainer: Optional existing trainer (from curriculum learning)
-    
-    Returns:
-        trainer: Updated trainer
-        results: Dictionary of round-by-round results
+
+    Each round:
+    1. Evaluate model on adversarial cases to identify weaknesses
+    2. Generate targeted rule-based cases focused on those weaknesses
+    3. Optionally mix in self-generated cases from the previous round
+    4. Train on the combined hard dataset
+    5. Model generates its own hard cases for the next round
+
+    The self-generation loop (step 5 → step 3) is what makes this recursive:
+    the model's own failure patterns shape what it trains on next.
     """
     print("\n" + "="*60)
     print("ADVERSARIAL SELF-PLAY TRAINING")
     print("="*60)
     print(f"  Rounds: {config.adversarial_rounds}")
     print(f"  Samples per round: {config.adversarial_samples}")
-    
-    # Initialize LLM adversarial designer if configured
-    llm_designer = None
-    if config.use_llm_adversarial:
-        try:
-            llm_designer = LLMAdversarialDesigner(
-                provider=config.llm_provider,
-                model=config.llm_model
-            )
-            print(f"  LLM Adversarial: {config.llm_provider} ({llm_designer.model})")
-        except Exception as e:
-            print(f"  Warning: LLM adversarial failed to initialize: {e}")
-            print(f"  Falling back to rule-based adversarial")
-    else:
-        print(f"  Mode: Rule-based (10 predefined strategies)")
-    
-    # Initialize tracker
+    print(f"  Self-generation: {config.use_self_generation}")
+
     tracker = AdversarialTracker()
-    
-    # Create trainer if not provided
+
     if trainer is None:
         print("\n  Creating initial trainer...")
         eval_dataset = generate_dataset(config.num_eval_samples, seed=123, difficulty="all")
         train_dataset = generate_adversarial_dataset(
-            config.adversarial_samples, 
-            seed=42, 
-            tracker=None,  # First round: random adversarial
+            config.adversarial_samples,
+            seed=42,
+            tracker=None,
             target_weakness=False
         )
         trainer = create_trainer_with_datasets(config, train_dataset, eval_dataset)
-    
+
     round_results = []
-    
+    self_gen_carry = []  # Self-generated cases from previous round
+
     for round_idx in range(config.adversarial_rounds):
         print(f"\n{'='*60}")
         print(f"ADVERSARIAL ROUND {round_idx + 1}/{config.adversarial_rounds}")
         print(f"{'='*60}")
-        
-        # Step 1: Evaluate current model on adversarial cases
-        eval_results = evaluate_adversarial(trainer, tracker, num_samples=30)
-        
-        # Step 2: Identify weakness
+
+        # Step 1: Evaluate and identify weakness
+        evaluate_adversarial(trainer, tracker, num_samples=30)
         weakness = tracker.get_weakness()
         weakness_rate = tracker.get_weakness_rate(weakness)
         print(f"\n  Identified weakness: {weakness} (failure rate: {weakness_rate*100:.0f}%)")
-        
-        # Step 3: Generate targeted adversarial dataset
+
+        # Step 2: Rule-based targeted dataset
         print(f"  Generating targeted training data...")
-        
-        if llm_designer is not None:
-            # Use LLM to generate novel adversarial cases
-            print(f"  Using LLM adversarial designer...")
-            llm_cases = llm_designer.generate_batch(
-                config.adversarial_samples // 2,  # Half from LLM
-                tracker=tracker
-            )
-            
-            # Convert LLM cases to dataset format
-            llm_samples = []
-            for case in llm_cases:
-                gt = calculate_ground_truth(case)
-                profile = build_profile_text(case)
-                llm_samples.append({
-                    "prompt": [
-                        {"role": "system", "content": SYSTEM_PROMPT},
-                        {"role": "user", "content": profile}
-                    ],
-                    "ground_truth": gt,
-                    "task_id": {"personal": 1, "vehicle": 2, "home": 3}[case["loan_type"]],
-                    "loan_type": case["loan_type"],
-                    "applicant_data": json.dumps(case),
-                    "adversarial_strategy": case.get("trap_type", "llm_generated"),
-                })
-            
-            # Other half from rule-based
-            rule_based_dataset = generate_adversarial_dataset(
-                config.adversarial_samples // 2,
-                seed=42 + round_idx + 100,
-                tracker=tracker,
-                target_weakness=True
-            )
-            
-            adversarial_samples = llm_samples + list(rule_based_dataset)
-            random.shuffle(adversarial_samples)
-            adversarial_dataset = Dataset.from_list(adversarial_samples)
-        else:
-            # Use rule-based adversarial generation
-            adversarial_dataset = generate_adversarial_dataset(
-                config.adversarial_samples,
-                seed=42 + round_idx + 100,
-                tracker=tracker,
-                target_weakness=True  # Focus on weak areas
-            )
-        
-        # Also include some normal hard cases for balance
+        adversarial_dataset = generate_adversarial_dataset(
+            config.adversarial_samples,
+            seed=42 + round_idx + 100,
+            tracker=tracker,
+            target_weakness=True
+        )
+        adversarial_samples = list(adversarial_dataset)
+
+        # Step 3: Mix in self-generated cases from previous round (capped at 30%)
+        if self_gen_carry:
+            max_carry = max(1, len(adversarial_samples) * 3 // 10)
+            carry_to_use = self_gen_carry[:max_carry]
+            adversarial_samples = carry_to_use + adversarial_samples
+            print(f"  Mixed in {len(carry_to_use)} self-generated cases from previous round")
+
         normal_dataset = generate_dataset(
             config.adversarial_samples // 2,
             seed=42 + round_idx + 200,
             difficulty="hard"
         )
-        
-        # Combine datasets
-        combined_samples = list(adversarial_dataset) + list(normal_dataset)
+
+        combined_samples = adversarial_samples + list(normal_dataset)
         random.shuffle(combined_samples)
         train_dataset = Dataset.from_list(combined_samples)
-        
-        # Step 4: Update trainer and train
+
+        # Step 4: Train
         trainer.train_dataset = train_dataset
-        print(f"\n  Training on {len(train_dataset)} samples (70% adversarial, 30% hard)...")
+        print(f"\n  Training on {len(train_dataset)} samples...")
         trainer.train()
-        
+
         # Step 5: Measure improvement
         print(f"\n  Measuring improvement...")
         post_eval = evaluate_adversarial(trainer, tracker, num_samples=20)
-        
-        # Calculate round accuracy
+
         total_correct = sum(r["correct"] for r in post_eval.values())
         total_samples = sum(r["total"] for r in post_eval.values())
         round_acc = total_correct / total_samples if total_samples > 0 else 0
-        
+
+        # Step 6: Model generates its own hard cases for the next round
+        if config.use_self_generation:
+            print(f"\n  Self-generating hard cases for next round...")
+            self_gen_carry = self_generate_adversarial_cases(
+                trainer, tracker, num_cases=config.adversarial_samples // 3
+            )
+            print(f"  Generated {len(self_gen_carry)} valid self-generated cases")
+
         round_results.append({
             "round": round_idx + 1,
             "weakness_targeted": weakness,
             "accuracy": round_acc,
+            "self_generated": len(self_gen_carry) if config.use_self_generation else 0,
             "details": post_eval,
         })
-        
+
         print(f"\n  Round {round_idx + 1} complete: {round_acc*100:.1f}% accuracy on adversarial cases")
     
     # Final summary
@@ -981,12 +1054,14 @@ def main():
     if config.use_curriculum:
         print(f"  Samples per phase: {config.samples_per_phase}")
         print(f"  Total phases: 3 (easy → medium → hard)")
+        print(f"  Mastery threshold: {config.phase_mastery_threshold*100:.0f}% (max retries: {config.max_phase_retries})")
     else:
         print(f"  Training samples: {config.num_train_samples}")
     print(f"  Adversarial Training: {config.use_adversarial}")
     if config.use_adversarial:
         print(f"  Adversarial rounds: {config.adversarial_rounds}")
         print(f"  Adversarial samples per round: {config.adversarial_samples}")
+        print(f"  Self-generation: {config.use_self_generation}")
     print(f"  Epochs: {config.num_train_epochs}")
     print(f"  Batch size: {config.per_device_train_batch_size}")
     print(f"  Gradient accumulation: {config.gradient_accumulation_steps}")
