@@ -367,7 +367,7 @@ Train an LLM to make accurate loan decisions using Group Relative Policy Optimiz
 
 Open the notebook in Google Colab:
 
-[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/iamnijin/credit-assessment-env/blob/main/train_grpo_colab.ipynb)
+[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/Nijin-P-S/Credit_Assessment_Env/blob/main/train_grpo_colab.ipynb)
 
 ### Local Training
 
