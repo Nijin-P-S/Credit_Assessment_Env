@@ -28,6 +28,13 @@ import random
 from dataclasses import dataclass
 from typing import Any
 
+from huggingface_hub import login as hf_login
+
+hf_token = os.getenv("HF_TOKEN")
+if hf_token:
+    hf_login(token=hf_token)
+    print("Logged in to HuggingFace!")
+
 import torch
 from datasets import Dataset
 from peft import LoraConfig
@@ -93,8 +100,8 @@ class TrainConfig:
     
     # Output
     output_dir: str = "./grpo_credit_assessment"
-    push_to_hub: bool = False
-    hub_model_id: str = None
+    push_to_hub: bool = True
+    hub_model_id: str = os.getenv("HUB_MODEL_ID", "iamnijin/credit-assessment-grpo-trained")
     
     # Logging
     logging_steps: int = 5
