@@ -972,19 +972,33 @@ def train_with_adversarial(config: TrainConfig, trainer=None):
             adversarial_samples = carry_to_use + adversarial_samples
             print(f"  Mixed in {len(carry_to_use)} self-generated cases from previous round")
 
-        normal_dataset = generate_dataset(
-            config.adversarial_samples // 2,
+        # CRITICAL: Replay data from all difficulties to prevent catastrophic forgetting
+        easy_replay = generate_dataset(
+            config.adversarial_samples // 4,
             seed=42 + round_idx + 200,
+            difficulty="easy"
+        )
+        medium_replay = generate_dataset(
+            config.adversarial_samples // 4,
+            seed=42 + round_idx + 300,
+            difficulty="medium"
+        )
+        hard_replay = generate_dataset(
+            config.adversarial_samples // 4,
+            seed=42 + round_idx + 400,
             difficulty="hard"
         )
-
-        combined_samples = adversarial_samples + list(normal_dataset)
+        
+        replay_samples = list(easy_replay) + list(medium_replay) + list(hard_replay)
+        combined_samples = adversarial_samples + replay_samples
         random.shuffle(combined_samples)
         train_dataset = Dataset.from_list(combined_samples)
 
         # Step 4: Train
         trainer.train_dataset = train_dataset
-        print(f"\n  Training on {len(train_dataset)} samples...")
+        print(f"\n  Training on {len(train_dataset)} samples:")
+        print(f"    - {len(adversarial_samples)} adversarial (targeting {weakness})")
+        print(f"    - {len(replay_samples)} replay (easy+medium+hard to prevent forgetting)")
         trainer.train()
 
         # Step 5: Measure improvement
