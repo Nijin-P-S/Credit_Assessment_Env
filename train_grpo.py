@@ -81,7 +81,9 @@ class TrainConfig:
     num_train_epochs: int = 3
     per_device_train_batch_size: int = 2
     gradient_accumulation_steps: int = 4
-    learning_rate: float = 1e-5
+    learning_rate: float = 5e-6       # Lowered from 1e-5 — prevents policy overshooting on hard cases
+    max_grad_norm: float = 0.1        # Gradient clipping — prevents negative loss / exploding updates
+    beta: float = 0.1                 # KL penalty — constrains how far model drifts from reference per round
     
     # LoRA (Parameter Efficient Fine-Tuning)
     use_peft: bool = True
@@ -511,27 +513,19 @@ def create_trainer(config: TrainConfig) -> GRPOTrainer:
         per_device_train_batch_size=config.per_device_train_batch_size,
         gradient_accumulation_steps=config.gradient_accumulation_steps,
         learning_rate=config.learning_rate,
-        
-        # GRPO specific
+        max_grad_norm=config.max_grad_norm,
+        beta=config.beta,
         num_generations=config.num_generations,
         max_completion_length=config.max_completion_length,
-        
-        # Logging
         logging_steps=config.logging_steps,
         eval_strategy="steps",
         eval_steps=config.eval_steps,
         save_steps=config.save_steps,
-        
-        # Memory optimization
         gradient_checkpointing=True,
         bf16=torch.cuda.is_available() and torch.cuda.is_bf16_supported(),
         fp16=torch.cuda.is_available() and not torch.cuda.is_bf16_supported(),
-        
-        # Push to hub
         push_to_hub=config.push_to_hub,
         hub_model_id=config.hub_model_id,
-        
-        # Report to wandb if available
         report_to="wandb" if os.environ.get("WANDB_API_KEY") else "none",
     )
     
@@ -736,10 +730,12 @@ def create_trainer_with_datasets(config: TrainConfig, train_dataset, eval_datase
     
     grpo_config = GRPOConfig(
         output_dir=config.output_dir,
-        num_train_epochs=1,  # 1 epoch per phase for curriculum
+        num_train_epochs=1,
         per_device_train_batch_size=config.per_device_train_batch_size,
         gradient_accumulation_steps=config.gradient_accumulation_steps,
         learning_rate=config.learning_rate,
+        max_grad_norm=config.max_grad_norm,
+        beta=config.beta,
         num_generations=config.num_generations,
         max_completion_length=config.max_completion_length,
         logging_steps=config.logging_steps,
