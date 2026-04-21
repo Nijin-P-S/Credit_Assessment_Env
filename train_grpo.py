@@ -826,6 +826,50 @@ def quick_evaluate(trainer, dataset, num_samples=10):
     return correct / total if total > 0 else 0
 
 
+def evaluate_by_loan_type(trainer, num_samples_per_type: int = 20) -> dict:
+    """Evaluate accuracy per loan type to detect catastrophic forgetting."""
+    tokenizer = trainer.processing_class
+    model = trainer.model
+    results = {}
+
+    for loan_type in ["personal", "vehicle", "home"]:
+        correct = 0
+        total = 0
+        dataset = generate_dataset(num_samples_per_type, seed=999, difficulty="all")
+        for sample in dataset:
+            applicant_data = sample.get("applicant", {})
+            if applicant_data.get("loan_type") != loan_type:
+                continue
+            prompt_text = tokenizer.apply_chat_template(
+                sample["prompt"], tokenize=False, add_generation_prompt=True
+            )
+            inputs = tokenizer(prompt_text, return_tensors="pt").to(model.device)
+            with torch.no_grad():
+                outputs = model.generate(
+                    **inputs, max_new_tokens=256, do_sample=False,
+                    pad_token_id=tokenizer.pad_token_id,
+                )
+            response = tokenizer.decode(outputs[0][inputs.input_ids.shape[1]:], skip_special_tokens=True)
+            try:
+                parsed = json.loads(response.strip())
+                decision = parsed.get("decision", "").lower()
+                if decision == sample["ground_truth"]:
+                    correct += 1
+                total += 1
+            except:
+                total += 1
+        results[loan_type] = {"correct": correct, "total": total,
+                              "accuracy": correct / total if total > 0 else 0.0}
+
+    print(f"    Personal: {results['personal']['correct']}/{results['personal']['total']} "
+          f"({results['personal']['accuracy']*100:.0f}%)  |  "
+          f"Vehicle: {results['vehicle']['correct']}/{results['vehicle']['total']} "
+          f"({results['vehicle']['accuracy']*100:.0f}%)  |  "
+          f"Home: {results['home']['correct']}/{results['home']['total']} "
+          f"({results['home']['accuracy']*100:.0f}%)")
+    return results
+
+
 def evaluate_adversarial(trainer, tracker: AdversarialTracker, num_samples: int = 30) -> dict:
     """
     Evaluate model on adversarial cases and update tracker.
@@ -950,6 +994,8 @@ def train_with_adversarial(config: TrainConfig, trainer=None):
         print(f"{'='*60}")
 
         # Step 1: Evaluate and identify weakness
+        print(f"\n  [Before Round {round_idx + 1}] Accuracy by loan type:")
+        pre_round = evaluate_by_loan_type(trainer)
         evaluate_adversarial(trainer, tracker, num_samples=30)
         weakness = tracker.get_weakness()
         weakness_rate = tracker.get_weakness_rate(weakness)
@@ -1002,7 +1048,12 @@ def train_with_adversarial(config: TrainConfig, trainer=None):
         trainer.train()
 
         # Step 5: Measure improvement
-        print(f"\n  Measuring improvement...")
+        print(f"\n  [After Round {round_idx + 1}] Accuracy by loan type:")
+        post_round = evaluate_by_loan_type(trainer)
+        for lt in ["personal", "vehicle", "home"]:
+            delta = post_round[lt]["accuracy"] - pre_round[lt]["accuracy"]
+            arrow = "✅" if delta >= 0 else "❌"
+            print(f"    {lt}: {delta*100:+.0f}% {arrow}")
         post_eval = evaluate_adversarial(trainer, tracker, num_samples=20)
 
         total_correct = sum(r["correct"] for r in post_eval.values())
