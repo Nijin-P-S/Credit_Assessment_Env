@@ -100,13 +100,16 @@ class TrainConfig:
     
     # Output
     output_dir: str = "./grpo_credit_assessment"
-    push_to_hub: bool = True
+    # Push intermediate checkpoints to HF Hub. Set HF_PUSH_CHECKPOINTS=0 to disable
+    # (recommended for HF Jobs / Spaces to avoid slow uploads every save_steps).
+    # The final model is always saved locally via trainer.save_model() regardless.
+    push_to_hub: bool = os.getenv("HF_PUSH_CHECKPOINTS", "1") == "1"
     hub_model_id: str = os.getenv("HUB_MODEL_ID", "iamnijin/credit-assessment-grpo-trained")
-    
+
     # Logging
     logging_steps: int = 5
     eval_steps: int = 50
-    save_steps: int = 100
+    save_steps: int = 200  # Larger interval = fewer checkpoints = faster on cloud
 
 
 # =============================================================================
@@ -578,7 +581,8 @@ def evaluate_model(trainer: GRPOTrainer, num_samples: int = 20) -> dict:
     
     tokenizer = trainer.processing_class
     model = trainer.model
-    
+    model.eval()
+
     for sample in test_dataset:
         prompt = tokenizer.apply_chat_template(
             sample["prompt"],
@@ -592,8 +596,7 @@ def evaluate_model(trainer: GRPOTrainer, num_samples: int = 20) -> dict:
             outputs = model.generate(
                 **inputs,
                 max_new_tokens=256,
-                do_sample=True,
-                temperature=0.7,
+                do_sample=False,
                 pad_token_id=tokenizer.pad_token_id,
             )
         
@@ -633,6 +636,8 @@ def evaluate_model(trainer: GRPOTrainer, num_samples: int = 20) -> dict:
             acc = results["correct"] / results["total"]
             print(f"  {task_names[task_id]}: {results['correct']}/{results['total']} ({acc*100:.1f}%)")
     
+    model.train()
+
     return {
         "overall_accuracy": overall_acc,
         "correct": correct,
@@ -672,10 +677,12 @@ def train_with_curriculum(config: TrainConfig):
         print(f"{phase_name}")
         print(f"{'='*60}")
 
+        # Evaluate on the CURRENT phase difficulty (so mastery is achievable)
+        # Phase 1 trained on easy → evaluate on easy, etc.
         eval_dataset = generate_dataset(
             config.num_eval_samples,
             seed=123,
-            difficulty="all"
+            difficulty=difficulty
         )
 
         phase_acc = 0.0
@@ -779,12 +786,18 @@ def create_trainer_with_datasets(config: TrainConfig, train_dataset, eval_datase
 
 
 def quick_evaluate(trainer, dataset, num_samples=10):
-    """Quick evaluation for curriculum phase tracking."""
+    """Quick evaluation for curriculum phase tracking.
+
+    Uses greedy decoding (do_sample=False) so measurements are deterministic —
+    this is critical for mastery-threshold gating where a few % of variance
+    would cause false retries/advancements.
+    """
     correct = 0
     total = 0
     tokenizer = trainer.processing_class
     model = trainer.model
-    
+    model.eval()
+
     for i, sample in enumerate(dataset):
         if i >= num_samples:
             break
@@ -801,8 +814,7 @@ def quick_evaluate(trainer, dataset, num_samples=10):
             outputs = model.generate(
                 **inputs,
                 max_new_tokens=256,
-                do_sample=True,
-                temperature=0.7,
+                do_sample=False,
                 pad_token_id=tokenizer.pad_token_id,
             )
         
@@ -822,7 +834,8 @@ def quick_evaluate(trainer, dataset, num_samples=10):
             total += 1
         except:
             total += 1
-    
+
+    model.train()
     return correct / total if total > 0 else 0
 
 
@@ -830,15 +843,24 @@ def evaluate_by_loan_type(trainer, num_samples_per_type: int = 20) -> dict:
     """Evaluate accuracy per loan type to detect catastrophic forgetting."""
     tokenizer = trainer.processing_class
     model = trainer.model
+    model.eval()
     results = {}
+
+    # Generate once, then filter per loan type (3x larger pool so each type gets ~num_samples_per_type)
+    dataset = generate_dataset(num_samples_per_type * 3, seed=999, difficulty="all")
 
     for loan_type in ["personal", "vehicle", "home"]:
         correct = 0
         total = 0
-        dataset = generate_dataset(num_samples_per_type, seed=999, difficulty="all")
         for sample in dataset:
-            applicant_data = sample.get("applicant", {})
-            if applicant_data.get("loan_type") != loan_type:
+            # Samples have loan_type directly; also handle legacy applicant_data JSON for safety
+            sample_loan_type = sample.get("loan_type")
+            if sample_loan_type is None:
+                try:
+                    sample_loan_type = json.loads(sample.get("applicant_data", "{}")).get("loan_type")
+                except Exception:
+                    sample_loan_type = None
+            if sample_loan_type != loan_type:
                 continue
             prompt_text = tokenizer.apply_chat_template(
                 sample["prompt"], tokenize=False, add_generation_prompt=True
@@ -861,6 +883,8 @@ def evaluate_by_loan_type(trainer, num_samples_per_type: int = 20) -> dict:
         results[loan_type] = {"correct": correct, "total": total,
                               "accuracy": correct / total if total > 0 else 0.0}
 
+    model.train()
+
     print(f"    Personal: {results['personal']['correct']}/{results['personal']['total']} "
           f"({results['personal']['accuracy']*100:.0f}%)  |  "
           f"Vehicle: {results['vehicle']['correct']}/{results['vehicle']['total']} "
@@ -881,7 +905,8 @@ def evaluate_adversarial(trainer, tracker: AdversarialTracker, num_samples: int 
     
     tokenizer = trainer.processing_class
     model = trainer.model
-    
+    model.eval()
+
     results_by_strategy = {s: {"correct": 0, "total": 0} for s in ADVERSARIAL_STRATEGIES}
     
     for strategy in ADVERSARIAL_STRATEGIES:
@@ -910,8 +935,7 @@ def evaluate_adversarial(trainer, tracker: AdversarialTracker, num_samples: int 
                 outputs = model.generate(
                     **inputs,
                     max_new_tokens=256,
-                    do_sample=True,
-                    temperature=0.7,
+                    do_sample=False,
                     pad_token_id=tokenizer.pad_token_id,
                 )
             
@@ -941,6 +965,8 @@ def evaluate_adversarial(trainer, tracker: AdversarialTracker, num_samples: int 
                 tracker.record_result(strategy, False)
                 results_by_strategy[strategy]["total"] += 1
     
+    model.train()
+
     # Print summary
     print("  Adversarial accuracy by strategy:")
     for strategy, results in results_by_strategy.items():
@@ -1040,12 +1066,16 @@ def train_with_adversarial(config: TrainConfig, trainer=None):
         random.shuffle(combined_samples)
         train_dataset = Dataset.from_list(combined_samples)
 
-        # Step 4: Train
+        # Step 4: Train — 1 epoch per adversarial round to prevent overfitting
+        # on the narrow targeted distribution (key stability fix).
         trainer.train_dataset = train_dataset
-        print(f"\n  Training on {len(train_dataset)} samples:")
+        prev_epochs = trainer.args.num_train_epochs
+        trainer.args.num_train_epochs = 1
+        print(f"\n  Training on {len(train_dataset)} samples (1 epoch):")
         print(f"    - {len(adversarial_samples)} adversarial (targeting {weakness})")
         print(f"    - {len(replay_samples)} replay (easy+medium+hard to prevent forgetting)")
         trainer.train()
+        trainer.args.num_train_epochs = prev_epochs
 
         # Step 5: Measure improvement
         print(f"\n  [After Round {round_idx + 1}] Accuracy by loan type:")
@@ -1156,21 +1186,33 @@ def main():
         trainer, adversarial_results = train_with_adversarial(config, trainer)
         eval_results["adversarial_training"] = adversarial_results
     
-    # Save final model
+    # Save final model locally
     print(f"\nSaving model to {config.output_dir}")
     trainer.save_model()
-    
+
     # Final evaluation on mixed test set
     print("\n" + "="*60)
     print("FINAL EVALUATION")
     print("="*60)
     final_eval = evaluate_model(trainer, num_samples=30)
     eval_results["final_evaluation"] = final_eval
-    
+
+    # Push final model to HF Hub (always, as long as HF_TOKEN is set and
+    # HUB_MODEL_ID is valid). This is separate from intermediate push_to_hub.
+    if hf_token and config.hub_model_id:
+        try:
+            print(f"\nPushing final model to HuggingFace Hub: {config.hub_model_id}")
+            trainer.push_to_hub(
+                commit_message="Final model: curriculum + adversarial self-play GRPO"
+            )
+            print(f"✓ Model pushed to https://huggingface.co/{config.hub_model_id}")
+        except Exception as e:
+            print(f"⚠️  Hub push failed (model still saved locally): {e}")
+
     print("\n" + "="*60)
     print("Training complete!")
     print("="*60)
-    
+
     return trainer, eval_results
 
 
