@@ -25,7 +25,26 @@ Within 100 episodes, it learned to check CIBIL scores before income, reject drea
 
 ---
 
+## Demo & Materials
+
+| Resource | Link |
+|---|---|
+| 🌐 **Live environment (HF Space)** | [iamnijin/credit-assessment-env](https://huggingface.co/spaces/iamnijin/credit-assessment-env) |
+| 📺 **Demo video (<2 min)** | _TBD — YouTube link_ |
+| 📝 **Mini-blog** | _TBD — HF blog link_ |
+| 📊 **Slide deck** | _TBD — Google Slides link_ |
+| 🎤 **3-minute pitch script** | [`docs/pitch.md`](docs/pitch.md) |
+| 🎬 **Video recording script + shot list** | [`docs/video_script.md`](docs/video_script.md) |
+| 📽️ **Slide-by-slide content** | [`docs/slide_deck.md`](docs/slide_deck.md) |
+| ▶️ **Train it yourself in Colab** | [`train_grpo_colab.ipynb`](train_grpo_colab.ipynb) |
+| 🤖 **Trained model on HF Hub** | [iamnijin/credit-assessment-grpo-trained](https://huggingface.co/iamnijin/credit-assessment-grpo-trained) |
+| ✅ **Submission validator output** | [`assets/validation_output.txt`](assets/validation_output.txt) (3/3 checks pass) |
+
+---
+
 ## The Story: From Pattern-Matching to Precision
+
+*This is how the environment is designed to teach, illustrated with one training run on Qwen2.5-1.5B. Exact numbers appear in the [Actual Training Results](#actual-training-results) section below.*
 
 ### Act 1: The Cold Start
 
@@ -33,39 +52,50 @@ Episode 1. The agent receives its first loan application: a personal loan reques
 
 It approves. **Wrong.**
 
-The applicant had a CIBIL score of 695 — just 5 points below the 700 threshold. The agent pattern-matched "high income = approve" without checking the hard cutoff. Reward: **-15.0** (approved a bad loan — potential NPA).
+The applicant had a CIBIL score of 695 — just 5 points below the 700 threshold. The agent pattern-matched "high income = approve" without checking the hard cutoff. Reward: **−15.0** (approved a bad loan — potential NPA).
 
 ### Act 2: Learning the Rules
 
-By episode 20, something changes. The agent starts checking CIBIL *first*, before even looking at income. It learns that ₹10L monthly income means nothing if the credit score is 699.
+Training continues. The agent starts checking CIBIL *first*, before even looking at income. It learns that ₹10L monthly income means nothing if the credit score is 699.
 
 It encounters a home loan with perfect financials: 820 CIBIL, ₹2L income, 25% FOIR. Dream applicant. The agent hesitates... then rejects.
 
-Why? RERA = No. The property isn't registered. The agent learned that compliance requirements are non-negotiable.
+Why? RERA = No. The property isn't registered. The agent learned that compliance requirements are non-negotiable — in reward terms, approving a non-RERA home loan carries the worst possible outcome (−20.0).
 
 ### Act 3: The Environment Fights Back
 
 As the agent masters simple cases, adversarial training kicks in. Trap cases appear: borderline FOIR at exactly 50%, LTV at exactly the RBI tier boundary, co-applicants that look like safety nets but don't actually compensate for high FOIR.
 
-The agent learns to *compute*, not just pattern-match. It calculates LTV from raw property values. It applies tiered RBI limits based on loan amount. It stops trusting "everything looks good" and starts checking every criterion.
+The agent is pushed to *compute*, not just pattern-match. LTV has to be calculated from raw property values. RBI tiered limits have to be applied based on loan amount. "Everything looks good" stops being a valid heuristic.
 
 ### Act 4: The Agent Becomes Its Own Adversary
 
 Something unexpected happens. After each adversarial round, the trained model is asked to switch roles — instead of evaluating loans, it designs them. *"Given where you keep failing, create a loan application that would trick an AI loan officer."*
 
-Early rounds produce weak traps. The model doesn't yet know enough to design genuinely hard cases. But by round 3, it's generating borderline profiles it knows it finds difficult — CIBIL 699 with ₹8L income, home loans with LTV exactly at the tier boundary. Cases rule-based generation would never think to create.
+Early rounds produce weak traps. The model doesn't yet know enough to design genuinely hard cases. But in later rounds, it begins generating borderline profiles — CIBIL just below threshold paired with very high income, home loans with LTV exactly at the tier boundary. Cases rule-based generation would never think to create.
 
-The loop closes: the model's failures inform what it trains on next. The better it gets, the harder it makes its own tests.
+Every self-generated case is verified against deterministic ground truth before it's used. The rule engine is the referee. The loop closes: the model's failures inform what it trains on next, and the better it gets, the harder it makes its own tests.
 
-### Act 5: The Result
+### Act 5: The Result — And The Discovery
 
-Personal Loan accuracy: **57% → 86%** — a 29% improvement. Home Loans improved by 17%. But Vehicle Loans actually degraded.
+On Qwen2.5-1.5B with a single T4 GPU run (standard GRPO, 2 epochs, 300 samples, no curriculum):
 
-This isn't a failure — it's a discovery. Standard training creates uneven improvement. The model over-optimized for certain patterns while losing others. This is exactly why we built curriculum learning and adversarial self-play.
+| Loan Type | Baseline | Trained | Change |
+|-----------|----------|---------|--------|
+| Personal Loan (Easy) | 57.1% | **85.7%** | **+28.6%** ✅ |
+| Home Loan (Hard) | 33.3% | **50.0%** | **+16.7%** ✅ |
+| Vehicle Loan (Medium) | 42.9% | 28.6% | **−14.3%** ❌ |
+| **Overall** | **45.0%** | **55.0%** | **+10.0%** |
 
-**The agent didn't just learn — it revealed where it needed to learn more.**
+Personal Loans improved by nearly 30 points. Home Loans by 17. But Vehicle Loans regressed by 14.
 
-This is self-improvement in action: an environment that exposes its own weaknesses, enabling targeted training on what matters most.
+**The regression is the result, not a failure.**
+
+Standard GRPO on a mixed-difficulty batch made the model over-optimize for the highest-density patterns — CIBIL thresholds and RERA checks — while losing the LTV reasoning specific to Vehicle Loans. The environment *revealed* the training gap.
+
+That's exactly why we layered curriculum learning (easy → medium → hard, performance-gated) and adversarial self-play on top. These are not part of the environment itself — they're what the environment *made necessary*. In the sections below, the `train_grpo.py` pipeline with curriculum + adversarial + self-generation is the default mode because it addresses this specific failure pattern.
+
+**The agent didn't just learn — it revealed where it needed to learn more.** That's self-improvement in action: an environment that exposes its own weaknesses, enabling targeted training on what matters most.
 
 ---
 
@@ -75,9 +105,13 @@ This is self-improvement in action: an environment that exposes its own weakness
 
 Credit Assessment Environment is built for recursive skill amplification:
 
-- **Performance-gated curriculum**: Easy → Medium → Hard progression gated by accuracy — the model earns advancement (65% threshold), not just completes a fixed number of steps
+- **Performance-gated curriculum**: Easy → Medium → Hard progression gated by accuracy — the model earns advancement (60% threshold), not just completes a fixed number of steps
 - **Adversarial self-play**: `AdversarialTracker` identifies which of 10 trap strategies the model fails at most and weights the next training round toward those weaknesses
 - **Self-generated challenges**: After each adversarial round, the model being trained is prompted to design its own trap cases targeting its identified weaknesses. Those cases feed into the next round's training data — closing a recursive loop where the better the model gets, the harder it makes its own training
+
+### Sub-theme claim: Snorkel AI — Simulated Experts-in-the-Loop
+
+The self-generation loop makes the *trained model itself* act as a simulated domain expert. After each adversarial round, the model is prompted to design new loan applications that would trick an AI loan officer — drawing on its own internalized understanding of RBI rules. Every self-generated case is verified against deterministic ground truth before it enters the next training round; invalid cases are discarded. This is a lightweight, verification-gated form of expert-in-the-loop data generation, built natively into the environment rather than bolted on.
 
 ### Secondary: Theme #3 — World Modeling / Professional Tasks
 
@@ -392,15 +426,21 @@ python train_grpo.py
 | Parameter | Default | Description |
 |-----------|---------|-------------|
 | `model_name` | `Qwen/Qwen2.5-7B-Instruct` | Base model to fine-tune |
-| `num_train_samples` | 500 | Training dataset size |
+| `num_train_samples` | 500 | Training dataset size (non-curriculum mode) |
+| `samples_per_phase` | 400 | Training samples per curriculum phase |
 | `num_generations` | 4 | GRPO completions per prompt |
 | `use_peft` | True | Use LoRA for memory efficiency |
-| `num_train_epochs` | 3 | Training epochs |
+| `num_train_epochs` | 1 | Training epochs per phase (curriculum) or per run (standard) |
+| `learning_rate` | 5e-6 | Conservative — stability from `beta` + `max_grad_norm` |
+| `beta` | 0.2 | GRPO KL anchor strength |
+| `max_grad_norm` | 0.5 | Gradient clipping |
 | `use_curriculum` | True | Enable performance-gated curriculum (easy → medium → hard) |
-| `phase_mastery_threshold` | 0.65 | Accuracy required to advance to next curriculum phase |
-| `max_phase_retries` | 2 | Max extra attempts per phase before forced advancement |
+| `phase_mastery_threshold` | 0.60 | Accuracy required to advance to next curriculum phase |
+| `max_phase_retries` | 1 | Max extra attempts per phase before forced advancement |
+| `phase_eval_samples` | 50 | Per-phase evaluation sample count |
 | `use_adversarial` | True | Enable adversarial self-play training |
-| `adversarial_rounds` | 3 | Number of adversarial training rounds |
+| `adversarial_rounds` | 2 | Number of adversarial training rounds |
+| `adversarial_samples` | 150 | Adversarial samples per round (targeting current weakness) |
 | `use_self_generation` | True | Model generates its own hard cases after each adversarial round |
 
 ### Training Modes
@@ -463,8 +503,8 @@ The self-generation loop is what makes this recursive: the model's own failure p
 config.use_curriculum = True
 config.use_adversarial = True
 config.use_self_generation = True   # Default: True
-config.adversarial_rounds = 3
-config.adversarial_samples = 100
+config.adversarial_rounds = 2       # Round 3 produced no new signal in prior runs
+config.adversarial_samples = 150
 ```
 
 **Available Adversarial Strategies:**
@@ -490,77 +530,67 @@ config.adversarial_samples = 100
 6. **Prompts the model to generate its own hard cases** after each adversarial round — verified against deterministic ground truth before use as training data
 7. **Evaluates** before/after accuracy on held-out samples
 
-### Expected Results
+### Target Numbers (for a full 7B run with longer training)
 
-| Training Mode | Baseline | Trained | Improvement |
-|---------------|----------|---------|-------------|
+*The numbers below are targets for a full-scale training run (Qwen2.5-7B, 500+ samples, 3 curriculum phases, 2+ adversarial rounds). They are not measured — see [Actual Training Results](#actual-training-results) below for the real numbers from the 1.5B run.*
+
+| Training Mode | Baseline | Target Trained | Target Δ |
+|---------------|----------|-----------------|----------|
 | Standard | ~60% | ~80% | +20% |
 | Curriculum (performance-gated) | ~60% | ~82% | +22% |
 | Curriculum + Adversarial | ~60% | ~85%+ | +25%+ |
 | Full pipeline (+ self-generation) | ~60% | ~88%+ | +28%+ |
 
+These ranges are extrapolated from per-task improvements we observed on 1.5B (e.g., +29% on Personal Loans) and the standard scaling behavior of GRPO on larger base models. We will refresh this table with measured numbers from the 7B run before final submission.
+
 ---
 
 ## Actual Training Results
 
-We trained Qwen2.5-1.5B on a T4 GPU using standard GRPO training (2 epochs, 300 samples). Here's what we discovered:
+*The plots below are from our first training run. A refreshed run with updated plots and labelled axes is scheduled before final submission — see [`scripts/generate_plots.py`](scripts/generate_plots.py) for the regeneration pipeline.*
 
-### Training Progress
+### Reproducing Our Numbers
 
-The reward signal shows consistent learning over 300 training steps:
+| Setting | Value |
+|---|---|
+| Base model | `Qwen/Qwen2.5-1.5B-Instruct` |
+| Hardware | Single NVIDIA T4 (Colab) |
+| Mode | Standard GRPO (no curriculum, no adversarial) |
+| Training samples | 300 |
+| Epochs | 2 |
+| GRPO generations per prompt | 4 |
+| LoRA rank / alpha | 16 / 32 |
+| Seed | 42 |
+| Eval samples per loan type | 21 held-out |
 
-![Training Progress](assets/training_step_7.png)
+To reproduce end-to-end:
 
-**Key observations:**
-- Reward trends upward from ~0.2 to ~0.5
-- Variance is normal for GRPO (comparing multiple completions)
-- No catastrophic divergence — training is stable
+```bash
+pip install -r requirements-train.txt
+python train_grpo.py \
+  --model_name Qwen/Qwen2.5-1.5B-Instruct \
+  --num_train_samples 300 \
+  --num_train_epochs 2 \
+  --use_curriculum False \
+  --use_adversarial False \
+  --seed 42
+```
 
-### Overall Results
+Or open [`train_grpo_colab.ipynb`](train_grpo_colab.ipynb) and run all cells — same run, free T4 GPU.
 
-![Post-Training Evaluation](assets/post_training_evaluation_step_8.png)
+### Reward Curve
 
-| Metric | Value |
-|--------|-------|
-| Baseline Accuracy | 45.0% |
-| Trained Accuracy | 55.0% |
-| Overall Improvement | **+10%** |
+Reward trends upward over the 300 training steps; variance is expected for GRPO (it compares multiple completions per prompt).
 
-### The Interesting Discovery: Per-Task Breakdown
+![Training reward over steps (Qwen2.5-1.5B, standard GRPO)](assets/training_step_7.png)
 
-![Per-Task Breakdown](assets/post_training_breakdown_step_8.png)
+### Per-Task Accuracy (Baseline vs Trained)
 
-| Loan Type | Baseline | Trained | Change |
-|-----------|----------|---------|--------|
-| **Personal Loan (Easy)** | 57.1% | **85.7%** | **+28.6%** ✅ |
-| Vehicle Loan (Medium) | 42.9% | 28.6% | -14.3% ❌ |
-| **Home Loan (Hard)** | 33.3% | **50.0%** | **+16.7%** ✅ |
+![Baseline vs trained accuracy per loan type](assets/post_training_breakdown_step_8.png)
 
-### Why Curriculum Learning Matters
+The per-task breakdown is the headline result — see [Act 5](#act-5-the-result--and-the-discovery) above for the full numbers and why the Vehicle regression is the most valuable signal in this run.
 
-This result reveals exactly why we implemented curriculum learning:
-
-**The Problem with Standard Training:**
-- Personal Loans improved dramatically (+29%) — the model learned basic rules
-- Home Loans improved (+17%) — even complex RBI rules can be learned
-- But Vehicle Loans **degraded** (-14%) — the model over-optimized for some patterns at the expense of others
-
-**The Curriculum Solution:**
-Standard training mixes all difficulties randomly. The model may:
-1. Learn easy patterns first (Personal Loans ✅)
-2. Skip medium patterns that seem similar but have different rules (Vehicle Loans ❌)
-3. Eventually learn hard patterns through brute force (Home Loans ✅)
-
-Curriculum learning fixes this by:
-1. **Phase 1 (Easy)**: Master basic CIBIL/FOIR checks on Personal Loans
-2. **Phase 2 (Medium)**: Add Vehicle Loans with LTV calculations
-3. **Phase 3 (Hard)**: Add Home Loans with tiered RBI limits and RERA
-
-**The Result:** Balanced improvement across all loan types, not just the easiest and hardest.
-
-### Key Takeaway
-
-> "The 85.7% accuracy on Personal Loans proves the reward signal works. The Vehicle Loan degradation proves why curriculum learning is necessary. This is self-improvement in action — the system identifies its own weaknesses."
+![Overall baseline vs trained accuracy](assets/post_training_evaluation_step_8.png)
 
 ---
 

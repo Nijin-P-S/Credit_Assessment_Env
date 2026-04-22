@@ -415,15 +415,20 @@ def ground_truth_home(a: dict) -> str:
     if a["employment_years"] < 2:
         return "reject"
     
-    # RBI tiered LTV
+    # RBI tiered LTV — tiers are MUTUALLY EXCLUSIVE, not cumulative.
+    # See note in server/ground_truth/home_loan.py for details.
     if a.get("ltv_ratio"):
         loan_amount = a["loan_amount"]
-        if loan_amount <= 3000000 and a["ltv_ratio"] > 0.90:
-            return "counter_offer"
-        elif loan_amount <= 7500000 and a["ltv_ratio"] > 0.80:
-            return "counter_offer"
-        elif loan_amount > 7500000 and a["ltv_ratio"] > 0.75:
-            return "counter_offer"
+        ltv = a["ltv_ratio"]
+        if loan_amount <= 3000000:
+            if ltv > 0.90:
+                return "counter_offer"
+        elif loan_amount <= 7500000:
+            if ltv > 0.80:
+                return "counter_offer"
+        else:
+            if ltv > 0.75:
+                return "counter_offer"
     
     return "approve"
 

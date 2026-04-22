@@ -1077,7 +1077,7 @@ def train_with_adversarial(config: TrainConfig, trainer=None):
         # Step 1: Evaluate and identify weakness
         print(f"\n  [Before Round {round_idx + 1}] Accuracy by loan type:")
         pre_round = evaluate_by_loan_type(trainer)
-        evaluate_adversarial(trainer, tracker, per_strategy=config.adversarial_per_strategy_eval)
+        pre_eval = evaluate_adversarial(trainer, tracker, per_strategy=config.adversarial_per_strategy_eval)
         weakness = tracker.get_weakness()
         weakness_rate = tracker.get_weakness_rate(weakness)
         print(f"\n  Identified weakness: {weakness} (failure rate: {weakness_rate*100:.0f}%)")
@@ -1153,11 +1153,18 @@ def train_with_adversarial(config: TrainConfig, trainer=None):
             )
             print(f"  Generated {len(self_gen_carry)} valid self-generated cases")
 
+        # Pre/post accuracy specifically on the targeted strategy (used by
+        # scripts/generate_plots.py to render the adversarial-rounds chart).
+        pre_targeted = pre_eval.get(weakness, {}).get("accuracy", 0.0)
+        post_targeted = post_eval.get(weakness, {}).get("accuracy", 0.0)
+
         round_results.append({
             "round": round_idx + 1,
             "weakness_targeted": weakness,
             "accuracy": round_acc,
             "self_generated": len(self_gen_carry) if config.use_self_generation else 0,
+            "pre_targeted_accuracy": pre_targeted,
+            "post_targeted_accuracy": post_targeted,
             "details": post_eval,
         })
 
@@ -1181,6 +1188,126 @@ def train_with_adversarial(config: TrainConfig, trainer=None):
         "final_summary": summary,
         "curriculum_checkpoint": curriculum_ckpt_dir,
     }
+
+
+def write_training_log(
+    trainer,
+    config: TrainConfig,
+    eval_results: dict,
+    baseline_per_task: Optional[dict] = None,
+    baseline_overall: Optional[float] = None,
+    output_path: str = "training_log.json",
+) -> None:
+    """Emit a single JSON file consumed by ``scripts/generate_plots.py``.
+
+    Schema matches ``training_log.example.json``. All fields are optional for
+    the plot generator — the script skips plots whose inputs are missing, so
+    even partial training runs produce usable output.
+    """
+    import time
+    from datetime import datetime, timezone
+
+    log: dict = {
+        "meta": {
+            "model_name": config.model_name,
+            "mode": (
+                "curriculum" + ("+adversarial" if config.use_adversarial else "")
+                + ("+self_generation" if config.use_adversarial and config.use_self_generation else "")
+            ) if config.use_curriculum else (
+                "adversarial" + ("+self_generation" if config.use_self_generation else "")
+            ) if config.use_adversarial else "standard",
+            "seed": 42,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "hardware": (
+                torch.cuda.get_device_name(0) if torch.cuda.is_available() else "CPU"
+            ),
+            "num_train_samples": (
+                config.samples_per_phase * 3 if config.use_curriculum
+                else config.num_train_samples
+            ),
+            "use_peft": config.use_peft,
+            "lora_r": config.lora_r,
+            "lora_alpha": config.lora_alpha,
+        },
+    }
+
+    if baseline_per_task is not None:
+        log["baseline"] = {
+            "per_task": {k: v.get("accuracy", 0.0) if isinstance(v, dict) else v
+                         for k, v in baseline_per_task.items()},
+        }
+        if baseline_overall is not None:
+            log["baseline"]["overall"] = baseline_overall
+
+    # Trained per-task — always recompute at end of training so the log
+    # reflects the final checkpoint state.
+    try:
+        trained_per_task = evaluate_by_loan_type(trainer)
+        log["trained"] = {
+            "per_task": {k: v["accuracy"] for k, v in trained_per_task.items()},
+        }
+        final_eval = eval_results.get("final_evaluation") or {}
+        if "overall_accuracy" in final_eval:
+            log["trained"]["overall"] = final_eval["overall_accuracy"]
+    except Exception as e:
+        print(f"⚠ Could not evaluate trained model per-task for log: {e}")
+
+    # Reward curve — pulled straight from the trainer's own log_history so
+    # we don't need to duplicate metric collection.
+    try:
+        history = getattr(trainer.state, "log_history", []) or []
+        curve = []
+        for entry in history:
+            reward = entry.get("reward") or entry.get("train/reward")
+            step = entry.get("step")
+            if reward is not None and step is not None:
+                curve.append({
+                    "step": int(step),
+                    "reward": float(reward),
+                    "kl": float(entry.get("kl", entry.get("train/kl", 0.0)) or 0.0),
+                })
+        if curve:
+            log["reward_curve"] = curve
+    except Exception as e:
+        print(f"⚠ Could not extract reward curve: {e}")
+
+    # Curriculum phase summary
+    phase_results = eval_results.get("curriculum_phases")
+    if phase_results:
+        try:
+            log["curriculum"] = {
+                "phase_mastery_threshold": config.phase_mastery_threshold,
+                "phases": [
+                    {"name": name, "final_eval": float(acc)}
+                    for name, acc in phase_results
+                ],
+            }
+        except Exception as e:
+            print(f"⚠ Could not serialize curriculum phases: {e}")
+
+    # Adversarial round summary — shape matched to generate_plots.py reader.
+    adversarial = eval_results.get("adversarial_training") or {}
+    rounds = adversarial.get("rounds") or []
+    if rounds:
+        log["adversarial_rounds"] = [
+            {
+                "round": r.get("round", i + 1),
+                "targeted_strategy": r.get("weakness_targeted"),
+                "pre_round": {"targeted_accuracy": r.get("pre_targeted_accuracy", 0.0)},
+                "post_round": {"targeted_accuracy": r.get("post_targeted_accuracy", 0.0)},
+                "self_generated_count": r.get("self_generated", 0),
+                "adversarial_eval_overall_accuracy": r.get("accuracy"),
+            }
+            for i, r in enumerate(rounds)
+        ]
+
+    try:
+        with open(output_path, "w") as f:
+            json.dump(log, f, indent=2, default=str)
+        print(f"\n✓ Training log written to {output_path}")
+        print(f"  Regenerate plots with: python scripts/generate_plots.py {output_path}")
+    except Exception as e:
+        print(f"⚠ Could not write training log: {e}")
 
 
 def main():
@@ -1225,7 +1352,30 @@ def main():
     
     trainer = None
     eval_results = {}
-    
+    baseline_per_task = None
+    baseline_overall = None
+
+    # Baseline evaluation — measure the untrained model on the same per-task
+    # eval we'll run at the end, so scripts/generate_plots.py can render a
+    # true baseline-vs-trained comparison. This is expensive (~90 model gen
+    # calls), but only runs once and is critical evidence.
+    if os.getenv("SKIP_BASELINE", "0") != "1":
+        try:
+            print("\n" + "="*60)
+            print("Baseline evaluation (untrained model, used for plots)")
+            print("="*60)
+            baseline_trainer = create_trainer(config)
+            baseline_per_task = evaluate_by_loan_type(baseline_trainer)
+            vals = [v["accuracy"] for v in baseline_per_task.values()]
+            baseline_overall = sum(vals) / len(vals) if vals else 0.0
+            print(f"  Baseline overall: {baseline_overall*100:.1f}%")
+            # Free baseline trainer before we build the real one
+            del baseline_trainer
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+        except Exception as e:
+            print(f"⚠ Baseline evaluation failed ({e}); training will continue without it.")
+
     # Phase 1: Curriculum Learning (if enabled)
     if config.use_curriculum:
         trainer, phase_results = train_with_curriculum(config)
@@ -1296,6 +1446,20 @@ def main():
             print(f"✓ Model pushed to https://huggingface.co/{config.hub_model_id}")
         except Exception as e:
             print(f"⚠️  Hub push failed (model still saved locally): {e}")
+
+    # Emit a single JSON log file consumed by scripts/generate_plots.py to
+    # regenerate the reward curve, per-task accuracy, adversarial rounds, and
+    # curriculum phase charts. Disable with TRAINING_LOG_PATH="" if not needed.
+    training_log_path = os.getenv("TRAINING_LOG_PATH", "training_log.json")
+    if training_log_path:
+        write_training_log(
+            trainer,
+            config,
+            eval_results,
+            baseline_per_task=baseline_per_task,
+            baseline_overall=baseline_overall,
+            output_path=training_log_path,
+        )
 
     print("\n" + "="*60)
     print("Training complete!")

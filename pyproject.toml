@@ -48,3 +48,7 @@ packages = [
 
 [tool.setuptools.package-dir]
 "credit_assessment_env" = "."
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
