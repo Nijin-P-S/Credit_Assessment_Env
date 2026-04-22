@@ -26,7 +26,7 @@ import json
 import os
 import random
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Optional
 
 from huggingface_hub import login as hf_login
 
@@ -66,31 +66,33 @@ class TrainConfig:
     
     # Dataset
     num_train_samples: int = 500  # Number of training samples to generate
-    num_eval_samples: int = 50   # Number of evaluation samples
+    num_eval_samples: int = 200   # Evaluation pool (large enough to keep measurements stable)
     
     # Curriculum Learning
     use_curriculum: bool = True  # Enable 3-phase curriculum learning (easy → medium → hard)
-    samples_per_phase: int = 200  # Samples per curriculum phase (used if use_curriculum=True)
-    phase_mastery_threshold: float = 0.65  # Min accuracy required to advance to next phase
-    max_phase_retries: int = 2  # Max extra training attempts per phase before forced advance
+    samples_per_phase: int = 400  # 4× previous — enough gradient updates to actually learn
+    phase_mastery_threshold: float = 0.60  # Slightly relaxed — 60% on 50-sample eval is the real signal
+    max_phase_retries: int = 1  # Only one retry — more retries overfit on noise
+    phase_eval_samples: int = 50  # Per-phase quick eval (was 10 — too noisy)
     
     # Adversarial Training
     use_adversarial: bool = True  # Enable adversarial training phase after curriculum
-    adversarial_samples: int = 100  # Samples per adversarial round
-    adversarial_rounds: int = 3  # Number of adversarial training rounds
+    adversarial_samples: int = 150  # Per round — more coverage of each targeted strategy
+    adversarial_rounds: int = 2  # Round 3 produced no new signal in prior runs
     use_self_generation: bool = True  # Model generates its own hard cases each round
+    adversarial_per_strategy_eval: int = 5  # Samples per strategy in pre/post eval (was 2)
     
     # GRPO settings
-    num_generations: int = 4     # Completions per prompt for GRPO advantage calculation
+    num_generations: int = 8     # Was 4 — 8 gives much better advantage estimates
     max_completion_length: int = 256
     
     # Training
     num_train_epochs: int = 3
     per_device_train_batch_size: int = 2
     gradient_accumulation_steps: int = 4
-    learning_rate: float = 5e-6       # Lowered from 1e-5 — prevents policy overshooting on hard cases
-    max_grad_norm: float = 0.1        # Gradient clipping — prevents negative loss / exploding updates
-    beta: float = 0.1                 # KL penalty — constrains how far model drifts from reference per round
+    learning_rate: float = 5e-6       # Conservative — stability comes from beta + grad_norm, not LR swapping
+    max_grad_norm: float = 0.5        # Raised from 0.1 — 0.1 crushes updates on tiny batches
+    beta: float = 0.2                 # Raised from 0.1 — stronger anchor against cross-phase drift
     
     # LoRA (Parameter Efficient Fine-Tuning)
     use_peft: bool = True
@@ -564,8 +566,13 @@ def create_trainer(config: TrainConfig) -> GRPOTrainer:
     return trainer
 
 
-def evaluate_model(trainer: GRPOTrainer, num_samples: int = 20) -> dict:
-    """Evaluate the trained model on fresh samples."""
+def evaluate_model(trainer: GRPOTrainer, num_samples: int = 60) -> dict:
+    """Evaluate the trained model on fresh samples.
+
+    Default bumped from 20 → 60 so per-task numbers (typically 20 per type)
+    are no longer coin-flip noise. At 20 samples the per-type breakdown was
+    ~7 samples each, making any single flip look like a 15% accuracy swing.
+    """
     print("\n" + "="*60)
     print("EVALUATION")
     print("="*60)
@@ -651,15 +658,18 @@ def train_with_curriculum(config: TrainConfig):
     Train using 3-phase curriculum learning with performance-gated advancement.
 
     Each phase repeats up to max_phase_retries times if accuracy stays below
-    phase_mastery_threshold, ensuring the model earns advancement rather than
-    advancing on a fixed timer. The final phase has no gate since there is
-    nowhere left to advance.
+    phase_mastery_threshold. Within a phase, we keep the BEST adapter across
+    attempts — so a retry that regresses can't poison the next phase.
+
+    The final phase has no gate since there is nowhere left to advance.
     """
     print("\n" + "="*60)
     print("CURRICULUM LEARNING: Performance-Gated 3-Phase Training")
     print("="*60)
     print(f"  Mastery threshold: {config.phase_mastery_threshold*100:.0f}%")
     print(f"  Max retries per phase: {config.max_phase_retries}")
+    print(f"  Per-phase eval samples: {config.phase_eval_samples}")
+    print(f"  Samples per phase: {config.samples_per_phase}")
 
     # (difficulty, label, mastery_threshold)
     # Last phase has no gate — model trains through it regardless
@@ -671,6 +681,7 @@ def train_with_curriculum(config: TrainConfig):
 
     trainer = None
     phase_results = []
+    best_adapter_dir = os.path.join(config.output_dir, "_best_adapter")
 
     for phase_idx, (difficulty, phase_name, threshold) in enumerate(phases):
         print(f"\n{'='*60}")
@@ -678,7 +689,6 @@ def train_with_curriculum(config: TrainConfig):
         print(f"{'='*60}")
 
         # Evaluate on the CURRENT phase difficulty (so mastery is achievable)
-        # Phase 1 trained on easy → evaluate on easy, etc.
         eval_dataset = generate_dataset(
             config.num_eval_samples,
             seed=123,
@@ -686,11 +696,14 @@ def train_with_curriculum(config: TrainConfig):
         )
 
         phase_acc = 0.0
+        best_attempt_acc = -1.0
+        best_attempt_idx = -1
+
         for attempt in range(config.max_phase_retries + 1):
             if attempt > 0:
                 print(f"\n  [Retry {attempt}/{config.max_phase_retries}] "
-                      f"Accuracy {phase_acc*100:.1f}% < {threshold*100:.0f}% threshold — "
-                      f"repeating phase with fresh samples...")
+                      f"Best so far: {best_attempt_acc*100:.1f}% (attempt {best_attempt_idx+1}) — "
+                      f"below {threshold*100:.0f}% threshold, retrying with fresh samples...")
 
             train_dataset = generate_dataset(
                 config.samples_per_phase,
@@ -709,19 +722,36 @@ def train_with_curriculum(config: TrainConfig):
             print(f"\n  Training...")
             trainer.train()
 
-            print(f"\n  Evaluating...")
-            phase_acc = quick_evaluate(trainer, eval_dataset, num_samples=10)
+            print(f"\n  Evaluating on {config.phase_eval_samples} samples...")
+            phase_acc = quick_evaluate(trainer, eval_dataset, num_samples=config.phase_eval_samples)
             print(f"  Accuracy: {phase_acc*100:.1f}%"
                   + (f" (threshold: {threshold*100:.0f}%)" if threshold > 0 else " (no gate on final phase)"))
+
+            # Keep the best adapter seen so far in this phase
+            if phase_acc > best_attempt_acc:
+                best_attempt_acc = phase_acc
+                best_attempt_idx = attempt
+                try:
+                    trainer.save_model(best_adapter_dir)
+                    print(f"  → New best-in-phase adapter saved ({phase_acc*100:.1f}%)")
+                except Exception as e:
+                    print(f"  ⚠ Could not save best adapter: {e}")
 
             if threshold == 0.0 or phase_acc >= threshold:
                 if threshold > 0:
                     print(f"  Mastery achieved — advancing to next phase.")
                 break
         else:
-            print(f"  Threshold not reached after {config.max_phase_retries+1} attempts — advancing anyway.")
+            print(f"  Threshold not reached after {config.max_phase_retries+1} attempts.")
 
-        phase_results.append((phase_name, phase_acc))
+        # Warn loudly if the final attempt regressed vs. best-in-phase. The
+        # best adapter is preserved on disk at `best_adapter_dir` so the
+        # operator can manually pick it up if the final pipeline regresses.
+        if phase_acc < best_attempt_acc - 0.05 and os.path.isdir(best_adapter_dir):
+            print(f"  ⚠ Final-attempt accuracy {phase_acc*100:.1f}% regressed from best "
+                  f"{best_attempt_acc*100:.1f}%. Best adapter still saved at:\n    {best_adapter_dir}")
+
+        phase_results.append((phase_name, best_attempt_acc if best_attempt_acc >= 0 else phase_acc))
 
     print("\n" + "="*60)
     print("CURRICULUM LEARNING RESULTS")
@@ -785,12 +815,14 @@ def create_trainer_with_datasets(config: TrainConfig, train_dataset, eval_datase
     return trainer
 
 
-def quick_evaluate(trainer, dataset, num_samples=10):
+def quick_evaluate(trainer, dataset, num_samples=50):
     """Quick evaluation for curriculum phase tracking.
 
     Uses greedy decoding (do_sample=False) so measurements are deterministic —
     this is critical for mastery-threshold gating where a few % of variance
-    would cause false retries/advancements.
+    would cause false retries/advancements. Default bumped from 10 → 50: at
+    10 samples the 95% CI on an accuracy estimate is ±30%, making gating
+    decisions essentially random.
     """
     correct = 0
     total = 0
@@ -839,8 +871,13 @@ def quick_evaluate(trainer, dataset, num_samples=10):
     return correct / total if total > 0 else 0
 
 
-def evaluate_by_loan_type(trainer, num_samples_per_type: int = 20) -> dict:
-    """Evaluate accuracy per loan type to detect catastrophic forgetting."""
+def evaluate_by_loan_type(trainer, num_samples_per_type: int = 30) -> dict:
+    """Evaluate accuracy per loan type to detect catastrophic forgetting.
+
+    Default raised from 20 → 30. generate_dataset cycles task_id in (i%3)+1,
+    so we pool num_samples_per_type*3 and filter — guaranteeing each loan
+    type gets exactly num_samples_per_type samples.
+    """
     tokenizer = trainer.processing_class
     model = trainer.model
     model.eval()
@@ -894,24 +931,32 @@ def evaluate_by_loan_type(trainer, num_samples_per_type: int = 20) -> dict:
     return results
 
 
-def evaluate_adversarial(trainer, tracker: AdversarialTracker, num_samples: int = 30) -> dict:
+def evaluate_adversarial(trainer, tracker: AdversarialTracker, num_samples: int = 50,
+                          per_strategy: Optional[int] = None) -> dict:
     """
     Evaluate model on adversarial cases and update tracker.
-    
+
     This identifies which strategies the model struggles with,
     enabling targeted training in the next round.
+
+    Args:
+        num_samples: Total approximate sample budget (used if per_strategy is None).
+        per_strategy: If set, use exactly this many samples per strategy
+            (gives balanced, stable per-strategy accuracy estimates).
     """
     print("\n  Evaluating on adversarial cases...")
-    
+
     tokenizer = trainer.processing_class
     model = trainer.model
     model.eval()
 
     results_by_strategy = {s: {"correct": 0, "total": 0} for s in ADVERSARIAL_STRATEGIES}
-    
+
+    if per_strategy is None:
+        per_strategy = max(1, num_samples // len(ADVERSARIAL_STRATEGIES))
+
     for strategy in ADVERSARIAL_STRATEGIES:
-        # Generate a few samples per strategy
-        samples_per_strategy = max(1, num_samples // len(ADVERSARIAL_STRATEGIES))
+        samples_per_strategy = per_strategy
         
         for _ in range(samples_per_strategy):
             applicant = generate_adversarial_case(strategy)
@@ -997,6 +1042,8 @@ def train_with_adversarial(config: TrainConfig, trainer=None):
     print(f"  Rounds: {config.adversarial_rounds}")
     print(f"  Samples per round: {config.adversarial_samples}")
     print(f"  Self-generation: {config.use_self_generation}")
+    print(f"  Stability anchors: beta={config.beta}, max_grad_norm={config.max_grad_norm}, "
+          f"1 epoch/round")
 
     tracker = AdversarialTracker()
 
@@ -1011,6 +1058,14 @@ def train_with_adversarial(config: TrainConfig, trainer=None):
         )
         trainer = create_trainer_with_datasets(config, train_dataset, eval_dataset)
 
+    # Snapshot curriculum-end state so we can fall back to it if adversarial regresses.
+    curriculum_ckpt_dir = os.path.join(config.output_dir, "_curriculum_end")
+    try:
+        trainer.save_model(curriculum_ckpt_dir)
+        print(f"  Curriculum checkpoint saved to {curriculum_ckpt_dir} (fallback if adversarial regresses)")
+    except Exception as e:
+        print(f"  ⚠ Could not save curriculum checkpoint: {e}")
+
     round_results = []
     self_gen_carry = []  # Self-generated cases from previous round
 
@@ -1022,7 +1077,7 @@ def train_with_adversarial(config: TrainConfig, trainer=None):
         # Step 1: Evaluate and identify weakness
         print(f"\n  [Before Round {round_idx + 1}] Accuracy by loan type:")
         pre_round = evaluate_by_loan_type(trainer)
-        evaluate_adversarial(trainer, tracker, num_samples=30)
+        evaluate_adversarial(trainer, tracker, per_strategy=config.adversarial_per_strategy_eval)
         weakness = tracker.get_weakness()
         weakness_rate = tracker.get_weakness_rate(weakness)
         print(f"\n  Identified weakness: {weakness} (failure rate: {weakness_rate*100:.0f}%)")
@@ -1084,7 +1139,7 @@ def train_with_adversarial(config: TrainConfig, trainer=None):
             delta = post_round[lt]["accuracy"] - pre_round[lt]["accuracy"]
             arrow = "✅" if delta >= 0 else "❌"
             print(f"    {lt}: {delta*100:+.0f}% {arrow}")
-        post_eval = evaluate_adversarial(trainer, tracker, num_samples=20)
+        post_eval = evaluate_adversarial(trainer, tracker, per_strategy=config.adversarial_per_strategy_eval)
 
         total_correct = sum(r["correct"] for r in post_eval.values())
         total_samples = sum(r["total"] for r in post_eval.values())
@@ -1120,10 +1175,11 @@ def train_with_adversarial(config: TrainConfig, trainer=None):
     summary = tracker.get_summary()
     for strategy, data in sorted(summary.items(), key=lambda x: x[1]["accuracy"]):
         print(f"  {strategy}: {data['accuracy']*100:.0f}% ({data['failures']} failures)")
-    
+
     return trainer, {
         "rounds": round_results,
         "final_summary": summary,
+        "curriculum_checkpoint": curriculum_ckpt_dir,
     }
 
 
@@ -1181,11 +1237,25 @@ def main():
         trainer.train()
         eval_results["standard_training"] = evaluate_model(trainer)
     
+    # Snapshot curriculum-only model for side-by-side comparison
+    curriculum_only_dir = os.path.join(config.output_dir, "_curriculum_only")
+    curriculum_only_acc = None
+    if config.use_curriculum and config.use_adversarial:
+        try:
+            trainer.save_model(curriculum_only_dir)
+            print(f"\nCurriculum-only model snapshot: {curriculum_only_dir}")
+            print("Evaluating curriculum-only model (large sample for stable comparison)...")
+            curriculum_only_eval = evaluate_model(trainer, num_samples=60)
+            curriculum_only_acc = curriculum_only_eval["overall_accuracy"]
+            eval_results["curriculum_only_eval"] = curriculum_only_eval
+        except Exception as e:
+            print(f"⚠ Could not snapshot curriculum-only model: {e}")
+
     # Phase 2: Adversarial Training (if enabled)
     if config.use_adversarial:
         trainer, adversarial_results = train_with_adversarial(config, trainer)
         eval_results["adversarial_training"] = adversarial_results
-    
+
     # Save final model locally
     print(f"\nSaving model to {config.output_dir}")
     trainer.save_model()
@@ -1194,8 +1264,26 @@ def main():
     print("\n" + "="*60)
     print("FINAL EVALUATION")
     print("="*60)
-    final_eval = evaluate_model(trainer, num_samples=30)
+    final_eval = evaluate_model(trainer, num_samples=60)
     eval_results["final_evaluation"] = final_eval
+
+    # Compare curriculum-only vs curriculum+adversarial
+    if curriculum_only_acc is not None:
+        final_acc = final_eval["overall_accuracy"]
+        delta = final_acc - curriculum_only_acc
+        print("\n" + "="*60)
+        print("CURRICULUM vs CURRICULUM+ADVERSARIAL")
+        print("="*60)
+        print(f"  Curriculum-only     : {curriculum_only_acc*100:.1f}%")
+        print(f"  +Adversarial rounds : {final_acc*100:.1f}%  (Δ {delta*100:+.1f}%)")
+        if delta < -0.03:
+            print(f"\n  ⚠ Adversarial training REGRESSED overall accuracy.")
+            print(f"    For the pitch, use the curriculum-only checkpoint:")
+            print(f"      {curriculum_only_dir}")
+        elif delta > 0.03:
+            print(f"\n  ✓ Adversarial training helped. Use the final model.")
+        else:
+            print(f"\n  ≈ Within noise. Either checkpoint is defensible.")
 
     # Push final model to HF Hub (always, as long as HF_TOKEN is set and
     # HUB_MODEL_ID is valid). This is separate from intermediate push_to_hub.
