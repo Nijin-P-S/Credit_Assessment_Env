@@ -83,11 +83,11 @@ class TrainConfig:
     adversarial_per_strategy_eval: int = 5  # Samples per strategy in pre/post eval (was 2)
     
     # GRPO settings
-    num_generations: int = 8     # Was 4 — 8 gives much better advantage estimates
+    num_generations: int = 4     # 4 balances advantage quality vs training speed on A100
     max_completion_length: int = 256
     
     # Training
-    num_train_epochs: int = 3
+    num_train_epochs: int = 1
     per_device_train_batch_size: int = 2
     gradient_accumulation_steps: int = 4
     learning_rate: float = 5e-6       # Conservative — stability comes from beta + grad_norm, not LR swapping
