@@ -454,7 +454,9 @@ def main():
     parser.add_argument("--difficulty", default="all", choices=["easy", "medium", "hard", "all"])
     parser.add_argument("--output-dir", default="assets", help="Where to save fair_eval outputs.")
     parser.add_argument("--dtype", default="bfloat16", choices=["bfloat16", "float16", "float32"])
-    parser.add_argument("--max-new-tokens", type=int, default=256)
+    parser.add_argument("--max-new-tokens", type=int, default=512,
+                        help="Generation budget. Must be >= the prompt's CoT + JSON envelope; "
+                             "256 cuts off most CoT-style answers from the v3 SYSTEM_PROMPT.")
     args = parser.parse_args()
 
     output_dir = Path(args.output_dir)

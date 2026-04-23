@@ -271,7 +271,7 @@ class SFTArgs:
     lora_r: int = 32
     lora_alpha: int = 64
     lora_dropout: float = 0.05
-    max_seq_length: int = 1024
+    max_length: int = 1024  # TRL 0.17+: SFTConfig.max_length (was max_seq_length pre-0.13)
     output_dir: str = "./grpo_credit_assessment_sft"
     seed: int = 7
 
@@ -326,7 +326,7 @@ def run_sft(args: SFTArgs) -> None:
         bf16=bf16,
         fp16=not bf16,
         gradient_checkpointing=True,
-        max_seq_length=args.max_seq_length,
+        max_length=args.max_length,
         report_to="none",
         packing=False,
     )
@@ -363,7 +363,8 @@ def main():
     parser.add_argument("--lora-r", type=int, default=32)
     parser.add_argument("--lora-alpha", type=int, default=64)
     parser.add_argument("--lora-dropout", type=float, default=0.05)
-    parser.add_argument("--max-seq-length", type=int, default=1024)
+    parser.add_argument("--max-length", type=int, default=1024,
+                        help="Max tokenized sequence length (TRL 0.17+ uses max_length, was max_seq_length).")
     parser.add_argument("--output-dir", default="./grpo_credit_assessment_sft")
     parser.add_argument("--seed", type=int, default=7)
     args = parser.parse_args()
@@ -378,7 +379,7 @@ def main():
         lora_r=args.lora_r,
         lora_alpha=args.lora_alpha,
         lora_dropout=args.lora_dropout,
-        max_seq_length=args.max_seq_length,
+        max_length=args.max_length,
         output_dir=args.output_dir,
         seed=args.seed,
     )
