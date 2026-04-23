@@ -545,9 +545,31 @@ These ranges are extrapolated from per-task improvements we observed on 1.5B (e.
 
 ---
 
+## A Note on Evaluation Methodology
+
+The baseline-vs-trained comparison reported in `train_grpo.py` (and quoted in earlier sections of this README) uses **two different evaluation paths** for the two models:
+
+- The **baseline** is scored by `evaluate_by_loan_type()`, which calls `json.loads(response.strip())` directly with no markdown fence handling.
+- The **trained model** is scored by `evaluate_model()`, which strips ```` ```json ```` and ```` ``` ```` fences before parsing.
+
+Qwen-2.5-Instruct (the base model) defaults to wrapping JSON in markdown code fences. The GRPO-trained policy, in contrast, was rewarded for emitting raw JSON. Net effect: a non-trivial fraction of correct baseline responses are silently scored as wrong because the strict baseline parser cannot read them.
+
+The two paths also generate slightly different applicant pools (different `num_samples` to the same seed cycles different cases) and use different sample sizes per loan type, so per-task deltas conflate three things: real model differences, parser leniency differences, and applicant-pool differences.
+
+**To get an apples-to-apples comparison**, run [`scripts/fair_eval.py`](scripts/fair_eval.py). It loads the base model and the trained adapter, runs both through the **same applicants** with the **same lenient parser**, and reports per-task accuracy with **95% Wilson confidence intervals** so you can tell which deltas are statistically meaningful vs sampling noise.
+
+```bash
+python scripts/fair_eval.py \
+  --base-model Qwen/Qwen2.5-7B-Instruct \
+  --adapter-repo iamnijin/credit-assessment-curriculum \
+  --num-samples 120
+```
+
+Output is written to `assets/fair_eval_results.json` and `assets/fair_eval_chart.png`. The numbers in the sections below come from the original (unfair) eval pipeline — they will be replaced with `fair_eval.py` numbers in the final submission.
+
 ## Actual Training Results
 
-*The plots below are from our first training run. A refreshed run with updated plots and labelled axes is scheduled before final submission — see [`scripts/generate_plots.py`](scripts/generate_plots.py) for the regeneration pipeline.*
+*The plots below are from our first training run. A refreshed run with updated plots, labelled axes, and a fair head-to-head comparison is scheduled before final submission — see [`scripts/generate_plots.py`](scripts/generate_plots.py) and [`scripts/fair_eval.py`](scripts/fair_eval.py) for the regeneration pipeline.*
 
 ### Reproducing Our Numbers
 

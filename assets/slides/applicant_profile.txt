@@ -1,0 +1,22 @@
+Sample Loan Application (task 3 · home loan · hard)
+-----------------------------------------------------
+Loan Type: Home Loan
+Requested Amount: ₹3,165,600
+
+--- Applicant Profile ---
+CIBIL Score: 837
+Monthly Income: ₹216,810
+FOIR (Fixed Obligation to Income Ratio): 30%
+Employment: 14 years at current employer
+Documents: Complete
+
+--- Collateral Details ---
+Collateral Value: ₹5,131,770
+LTV Ratio: 62%
+
+--- Property Details ---
+RERA Registered: No
+Co-applicant: Yes
+Property Type: ready-to-move flat
+-----------------------------------------------------
+Correct decision: reject
