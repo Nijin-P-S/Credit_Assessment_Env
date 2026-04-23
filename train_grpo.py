@@ -54,6 +54,10 @@ from train_utils import (
     ADVERSARIAL_STRATEGIES,
 )
 
+# Single source of truth for parsing model JSON output. Used by the reward
+# function AND every eval path so baseline-vs-trained comparisons are fair.
+from lenient_parser import parse_response, parse_decision
+
 
 # =============================================================================
 # Configuration
@@ -83,21 +87,47 @@ class TrainConfig:
     adversarial_per_strategy_eval: int = 5  # Samples per strategy in pre/post eval (was 2)
     
     # GRPO settings
-    num_generations: int = 4     # 4 balances advantage quality vs training speed on A100
-    max_completion_length: int = 256
-    
+    # 8 generations gives much better advantage estimates than 4 — half the
+    # variance in the policy gradient at the cost of ~2× memory. Worth it on
+    # A100; drop back to 4 for T4.
+    num_generations: int = 8
+    # Bumped from 256 to allow chain-of-thought reasoning in front of the JSON
+    # answer block. Without this CoT gets truncated mid-rationale.
+    max_completion_length: int = 512
+
+    # Curriculum mode controls how phases are organised:
+    #   "difficulty"  — phase 1 = all-loans-easy, phase 2 = all-loans-medium, ...
+    #                   (original behaviour — model has to learn LTV/RERA from
+    #                   scratch when Vehicle/Home cases first appear at medium)
+    #   "task"        — phase 1 = personal only, phase 2 = +vehicle, phase 3 = +home
+    #                   (incremental skill addition; recommended)
+    curriculum_mode: str = os.getenv("CURRICULUM_MODE", "task")
+
+    # Mix this fraction of *previous-phase* samples into the current phase to
+    # prevent catastrophic forgetting. 0.0 disables; 0.2 is a sane default.
+    replay_fraction: float = 0.2
+
     # Training
     num_train_epochs: int = 1
     per_device_train_batch_size: int = 2
     gradient_accumulation_steps: int = 4
-    learning_rate: float = 5e-6       # Conservative — stability comes from beta + grad_norm, not LR swapping
-    max_grad_norm: float = 0.5        # Raised from 0.1 — 0.1 crushes updates on tiny batches
-    beta: float = 0.2                 # Raised from 0.1 — stronger anchor against cross-phase drift
-    
+    # Dropped from 5e-6 to 1e-6. The previous run collapsed train loss to
+    # ~0.0001 in ~50 steps, indicating the policy was overshooting. A lower
+    # LR + higher KL coefficient anchors more strongly to the reference.
+    learning_rate: float = 1e-6
+    max_grad_norm: float = 0.5
+    # Raised from 0.2 to 0.3 — even stronger reference anchor. Combined with
+    # the lower LR this keeps the policy in the neighbourhood of the SFT-warmed
+    # init while GRPO refines.
+    beta: float = 0.3
+
     # LoRA (Parameter Efficient Fine-Tuning)
+    # Doubled rank/alpha to give the adapter enough capacity to encode the
+    # full rule set (CIBIL + FOIR + LTV tier + RERA + employment + counter-
+    # offer arithmetic). With rank 16 the adapter saturates fast.
     use_peft: bool = True
-    lora_r: int = 16
-    lora_alpha: int = 32
+    lora_r: int = 32
+    lora_alpha: int = 64
     lora_dropout: float = 0.05
     
     # Output
@@ -120,27 +150,45 @@ class TrainConfig:
 
 SYSTEM_PROMPT = """You are a senior loan officer at an Indian bank. You assess loan applications following RBI guidelines and standard banking norms.
 
-You must respond with a JSON object containing:
-- "decision": one of "approve", "reject", "request_docs", "counter_offer"
-- "reasoning": a brief explanation for your decision
-- "counter_offer_amount": (only if decision is "counter_offer") the reduced loan amount
-- "docs_requested": (only if decision is "request_docs") what documents are needed
+Decision options (you must choose exactly one):
+- "approve" — application meets every applicable criterion
+- "reject" — at least one hard criterion fails (e.g., CIBIL < 700)
+- "request_docs" — documents incomplete (and only that, otherwise the application would clear)
+- "counter_offer" — applicant qualifies but the requested loan amount breaches an LTV cap; offer a reduced amount that fits the tier
 
-Key guidelines:
-- CIBIL score below 700 → reject
-- FOIR above 50% → reject
-- Incomplete documents → request_docs
-- For home loans: non-RERA property → reject regardless of other factors
-- For vehicle loans: LTV above 85% → counter_offer with reduced amount
-- For home loans: LTV limits are tiered by RBI:
-  - Loan ≤ ₹30L → max LTV 90%
-  - Loan ₹30-75L → max LTV 80%
-  - Loan > ₹75L → max LTV 75%
-- Employment: Personal/Vehicle loans need 1+ years, Home loans need 2+ years
+Hard rules to check, in order:
+1. Documents complete? If not → "request_docs"
+2. CIBIL score ≥ 700? If not → "reject"
+3. FOIR ≤ 50%? If not → "reject"
+4. Employment: personal/vehicle loans need ≥ 1 year, home loans need ≥ 2 years. If not → "reject"
+5. Home loan only: property RERA-registered? If not → "reject"
+6. LTV check (if collateralised):
+   - Vehicle: LTV ≤ 85%, else "counter_offer" reducing loan to 85% of collateral value
+   - Home: tiered by *loan amount*:
+       * loan ≤ ₹30L  → max LTV 90% (counter_offer at 90% if breached)
+       * loan ₹30L–₹75L → max LTV 80%
+       * loan > ₹75L → max LTV 75%
+7. Otherwise → "approve"
 
-IMPORTANT: Check EVERY criterion carefully. A single failing criterion means rejection, even if everything else is perfect.
+Reason step-by-step, then output your final answer as a JSON code block.
 
-Respond ONLY with valid JSON. No markdown, no explanation outside the JSON."""
+EXAMPLE 1 — CIBIL just below threshold (the "high income trap"):
+Application: personal loan, monthly income ₹6,00,000, CIBIL 699, FOIR 20%, 12 years employment, documents complete.
+Reasoning: documents complete (passes), CIBIL 699 < 700 → fails hard rule 2.
+Final answer:
+```json
+{"decision": "reject", "reasoning": "CIBIL 699 below 700 minimum despite high income"}
+```
+
+EXAMPLE 2 — Home LTV tier breach (the "RBI tier trap"):
+Application: home loan ₹1,20,00,000 against property worth ₹1,53,84,615 (LTV 78%), CIBIL 820, FOIR 25%, 10 years employment, RERA registered, documents complete.
+Reasoning: documents complete, CIBIL ≥ 700, FOIR ≤ 50%, employment ≥ 2y, RERA OK. Loan > ₹75L → max LTV 75%. Current LTV 78% > 75% → counter_offer reducing loan to 75% of property = ₹1,15,38,461.
+Final answer:
+```json
+{"decision": "counter_offer", "counter_offer_amount": 11538461, "reasoning": "Loan over ₹75L capped at 75% LTV by RBI; current 78% exceeds limit"}
+```
+
+Always finish with a single JSON block in ```json fences. The JSON must contain "decision" and "reasoning". Include "counter_offer_amount" only for counter_offer, and "docs_requested" only for request_docs."""
 
 SELF_GEN_PROMPT = """You are a loan underwriting trainer designing test cases for an AI loan officer.
 
@@ -394,88 +442,68 @@ def credit_assessment_reward(
         List of reward values in range [-1, 1]
     """
     rewards = []
-    
+
     for completion, gt, applicant_json in zip(completions, ground_truth, applicant_data):
+        if isinstance(completion, list) and len(completion) > 0:
+            content = completion[0].get("content", "")
+        else:
+            content = str(completion)
+
+        # Lenient parse: handles raw JSON, ```json fences, plain fences, CoT
+        # preamble, trailing prose. Returns None if no decision can be found.
+        parsed = parse_response(content)
+        if parsed is None:
+            rewards.append(-0.5)
+            continue
+
         try:
-            # Extract content from completion
-            if isinstance(completion, list) and len(completion) > 0:
-                content = completion[0].get("content", "")
-            else:
-                content = str(completion)
-            
-            # Parse JSON from model output
-            # Handle potential markdown code blocks
-            if "```json" in content:
-                content = content.split("```json")[1].split("```")[0]
-            elif "```" in content:
-                content = content.split("```")[1].split("```")[0]
-            
-            parsed = json.loads(content.strip())
-            
-            # Extract decision
-            decision_str = parsed.get("decision", "reject").lower()
-            try:
-                decision = LoanDecision(decision_str)
-            except ValueError:
-                decision = LoanDecision.REJECT
-            
-            # Create action
+            decision = LoanDecision(parsed.get("decision"))
+        except (ValueError, TypeError):
+            rewards.append(-0.5)
+            continue
+
+        try:
             action = CreditAssessmentAction(
                 decision=decision,
                 reasoning=parsed.get("reasoning", ""),
                 counter_offer_amount=parsed.get("counter_offer_amount"),
                 docs_requested=parsed.get("docs_requested"),
             )
-            
-            # Load applicant data
             applicant = json.loads(applicant_json)
-            
-            # Calculate raw reward using environment's reward function
             raw_reward = calculate_reward(action, applicant, gt)
-            
             # Normalize reward from [-20, +10] to [-1, +1]
             normalized = (raw_reward - (-20.0)) / (10.0 - (-20.0)) * 2 - 1
             rewards.append(normalized)
-            
-        except (json.JSONDecodeError, KeyError, TypeError) as e:
-            # Invalid JSON or missing fields → penalty
-            rewards.append(-0.5)
-        except Exception as e:
-            # Unexpected error → moderate penalty
+        except Exception:
             rewards.append(-0.3)
-    
+
     return rewards
 
 
 def format_reward_score(completion) -> float:
-    """Calculate format reward for a single completion."""
-    try:
-        if isinstance(completion, list) and len(completion) > 0:
-            content = completion[0].get("content", "")
-        else:
-            content = str(completion)
-        
-        if "```json" in content:
-            content = content.split("```json")[1].split("```")[0]
-        elif "```" in content:
-            content = content.split("```")[1].split("```")[0]
-        
-        parsed = json.loads(content.strip())
-        
-        has_decision = "decision" in parsed
-        has_reasoning = "reasoning" in parsed
-        
-        if has_decision and has_reasoning:
-            return 0.2
-        elif has_decision:
-            return 0.1
-        else:
-            return -0.1
-            
-    except json.JSONDecodeError:
+    """Calculate format reward for a single completion.
+
+    Uses the same lenient parser as the decision-reward path so that
+    chain-of-thought-style responses (CoT preamble + ```json answer block) get
+    full format credit. Penalises unparseable output.
+    """
+    if isinstance(completion, list) and len(completion) > 0:
+        content = completion[0].get("content", "")
+    else:
+        content = str(completion)
+
+    parsed = parse_response(content)
+    if parsed is None:
         return -0.2
-    except Exception:
-        return -0.1
+
+    has_decision = "decision" in parsed
+    has_reasoning = "reasoning" in parsed and bool(str(parsed.get("reasoning") or "").strip())
+
+    if has_decision and has_reasoning:
+        return 0.2
+    if has_decision:
+        return 0.1
+    return -0.1
 
 
 def combined_reward(
@@ -608,30 +636,16 @@ def evaluate_model(trainer: GRPOTrainer, num_samples: int = 60) -> dict:
             )
         
         response = tokenizer.decode(outputs[0][inputs.input_ids.shape[1]:], skip_special_tokens=True)
-        
-        try:
-            # Parse JSON
-            if "```json" in response:
-                response = response.split("```json")[1].split("```")[0]
-            elif "```" in response:
-                response = response.split("```")[1].split("```")[0]
-            
-            parsed = json.loads(response.strip())
-            decision = parsed.get("decision", "").lower()
-            
-            task_id = sample["task_id"]
-            is_correct = (decision == sample["ground_truth"])
-            
-            if is_correct:
-                correct += 1
-                results_by_task[task_id]["correct"] += 1
-            
-            total += 1
-            results_by_task[task_id]["total"] += 1
-            
-        except Exception:
-            total += 1
-            results_by_task[sample["task_id"]]["total"] += 1
+
+        # Lenient parse — matches what the reward function and fair_eval.py use,
+        # so baseline (untrained) and trained models are scored on equal terms.
+        decision = parse_decision(response)
+        task_id = sample["task_id"]
+        total += 1
+        results_by_task[task_id]["total"] += 1
+        if decision is not None and decision == sample["ground_truth"]:
+            correct += 1
+            results_by_task[task_id]["correct"] += 1
     
     # Print results
     overall_acc = correct / total if total > 0 else 0
@@ -653,6 +667,95 @@ def evaluate_model(trainer: GRPOTrainer, num_samples: int = 60) -> dict:
     }
 
 
+def _build_phase_data(config: TrainConfig, phase_idx: int, attempt: int):
+    """Construct (train, eval) datasets for a curriculum phase.
+
+    Honors `config.curriculum_mode`:
+
+      * "difficulty" — original behaviour. Phase 1 = all-loans-easy,
+        Phase 2 = all-loans-medium, Phase 3 = all-loans-hard. Vehicle/Home
+        cases first appear at medium difficulty, so the model sees LTV/RERA
+        for the first time exactly when it also has to handle harder logic.
+
+      * "task" — incremental skill addition. Phase 1 = personal only,
+        Phase 2 = vehicle only, Phase 3 = home only. Difficulty cycles
+        through easy/medium/hard within each task. This isolates one new
+        skill per phase so the GRPO advantage signal is never about both
+        "new task" and "harder cases" at the same time.
+
+    Replay buffer: when `config.replay_fraction > 0`, mix in samples from
+    previously completed phases to combat catastrophic forgetting. The
+    fraction is taken from the configured `samples_per_phase` budget (we
+    train on the same total volume).
+    """
+    seed = 42 + phase_idx * 100 + attempt
+    eval_seed = 123 + phase_idx
+
+    mode = (config.curriculum_mode or "task").lower()
+
+    # Build the per-phase data spec: list of (loan_type_filter, difficulty).
+    # loan_type_filter == None means "any loan type".
+    if mode == "task":
+        # task_id 1=personal, 2=vehicle, 3=home — but generate_dataset cycles by
+        # i%3 so we just oversample then filter. We pull a 3x pool to guarantee
+        # enough samples of the target loan type after filtering.
+        task_phases = [
+            ("personal", "all"),
+            ("vehicle",  "all"),
+            ("home",     "all"),
+        ]
+        target_loan, difficulty = task_phases[phase_idx]
+    else:
+        target_loan = None
+        difficulty = ["easy", "medium", "hard"][phase_idx]
+
+    n_total = config.samples_per_phase
+    n_replay = int(round(n_total * max(0.0, min(0.9, config.replay_fraction))))
+    n_current = n_total - n_replay if phase_idx > 0 else n_total
+
+    def _filtered(seed_val: int, n: int, loan: Optional[str], diff: str):
+        """Generate `n` samples optionally filtered to a single loan type."""
+        if loan is None:
+            return list(generate_dataset(n, seed=seed_val, difficulty=diff))
+        # Oversample to compensate for filtering. generate_dataset cycles
+        # task_id (i%3)+1 so any loan type is ~1/3 of samples.
+        pool = list(generate_dataset(n * 4, seed=seed_val, difficulty=diff))
+        matching = [s for s in pool if s["loan_type"] == loan]
+        return matching[:n]
+
+    current_samples = _filtered(seed, n_current, target_loan, difficulty)
+
+    # Replay from prior phases.
+    replay_samples = []
+    if n_replay > 0 and phase_idx > 0:
+        per_prior = max(1, n_replay // phase_idx)
+        for prior_idx in range(phase_idx):
+            if mode == "task":
+                prior_loan = ["personal", "vehicle", "home"][prior_idx]
+                prior_diff = "all"
+            else:
+                prior_loan = None
+                prior_diff = ["easy", "medium", "hard"][prior_idx]
+            replay_samples.extend(
+                _filtered(seed + 1000 + prior_idx, per_prior, prior_loan, prior_diff)
+            )
+
+    combined = current_samples + replay_samples
+    random.Random(seed).shuffle(combined)
+    train_dataset = Dataset.from_list(combined)
+
+    # Eval set tracks the *current* phase task/difficulty so mastery is
+    # achievable and meaningfully measures what the phase taught.
+    if mode == "task":
+        eval_pool = list(generate_dataset(config.num_eval_samples * 4, seed=eval_seed, difficulty="all"))
+        eval_filtered = [s for s in eval_pool if s["loan_type"] == target_loan]
+        eval_dataset = Dataset.from_list(eval_filtered[: config.num_eval_samples])
+    else:
+        eval_dataset = generate_dataset(config.num_eval_samples, seed=eval_seed, difficulty=difficulty)
+
+    return train_dataset, eval_dataset, target_loan, difficulty, n_current, n_replay
+
+
 def train_with_curriculum(config: TrainConfig):
     """
     Train using 3-phase curriculum learning with performance-gated advancement.
@@ -666,38 +769,39 @@ def train_with_curriculum(config: TrainConfig):
     print("\n" + "="*60)
     print("CURRICULUM LEARNING: Performance-Gated 3-Phase Training")
     print("="*60)
+    print(f"  Mode: {config.curriculum_mode}")
     print(f"  Mastery threshold: {config.phase_mastery_threshold*100:.0f}%")
     print(f"  Max retries per phase: {config.max_phase_retries}")
     print(f"  Per-phase eval samples: {config.phase_eval_samples}")
     print(f"  Samples per phase: {config.samples_per_phase}")
+    print(f"  Replay fraction: {config.replay_fraction}")
 
-    # (difficulty, label, mastery_threshold)
-    # Last phase has no gate — model trains through it regardless
-    phases = [
-        ("easy",   "Phase 1: Learning Basics (Easy Cases)",        config.phase_mastery_threshold),
-        ("medium", "Phase 2: Refining (Medium Cases)",             config.phase_mastery_threshold),
-        ("hard",   "Phase 3: Mastering (Hard Cases + Traps)",      0.0),
-    ]
+    if (config.curriculum_mode or "task").lower() == "task":
+        phases = [
+            ("personal", "Phase 1: Personal Loans (Foundation)",  config.phase_mastery_threshold),
+            ("vehicle",  "Phase 2: + Vehicle Loans (Adds LTV)",   config.phase_mastery_threshold),
+            ("home",     "Phase 3: + Home Loans (Adds Tiered LTV + RERA)", 0.0),
+        ]
+    else:
+        phases = [
+            ("easy",   "Phase 1: Learning Basics (Easy Cases)",        config.phase_mastery_threshold),
+            ("medium", "Phase 2: Refining (Medium Cases)",             config.phase_mastery_threshold),
+            ("hard",   "Phase 3: Mastering (Hard Cases + Traps)",      0.0),
+        ]
 
     trainer = None
     phase_results = []
     best_adapter_dir = os.path.join(config.output_dir, "_best_adapter")
 
-    for phase_idx, (difficulty, phase_name, threshold) in enumerate(phases):
+    for phase_idx, (_label, phase_name, threshold) in enumerate(phases):
         print(f"\n{'='*60}")
         print(f"{phase_name}")
         print(f"{'='*60}")
 
-        # Evaluate on the CURRENT phase difficulty (so mastery is achievable)
-        eval_dataset = generate_dataset(
-            config.num_eval_samples,
-            seed=123,
-            difficulty=difficulty
-        )
-
         phase_acc = 0.0
         best_attempt_acc = -1.0
         best_attempt_idx = -1
+        eval_dataset = None
 
         for attempt in range(config.max_phase_retries + 1):
             if attempt > 0:
@@ -705,13 +809,13 @@ def train_with_curriculum(config: TrainConfig):
                       f"Best so far: {best_attempt_acc*100:.1f}% (attempt {best_attempt_idx+1}) — "
                       f"below {threshold*100:.0f}% threshold, retrying with fresh samples...")
 
-            train_dataset = generate_dataset(
-                config.samples_per_phase,
-                seed=42 + phase_idx * 100 + attempt,
-                difficulty=difficulty
+            train_dataset, eval_dataset, target_loan, difficulty, n_cur, n_rep = _build_phase_data(
+                config, phase_idx, attempt
             )
-            print(f"  Samples: {len(train_dataset)}  |  Difficulty: {difficulty}"
-                  + (f"  |  Attempt: {attempt+1}/{config.max_phase_retries+1}" if config.max_phase_retries > 0 else ""))
+            label = f"loan={target_loan or 'all'}, difficulty={difficulty}"
+            replay_str = f"  |  Replay: {n_rep}/{n_cur+n_rep}" if n_rep > 0 else ""
+            attempt_str = f"  |  Attempt: {attempt+1}/{config.max_phase_retries+1}" if config.max_phase_retries > 0 else ""
+            print(f"  Samples: {len(train_dataset)}  |  {label}{replay_str}{attempt_str}")
 
             if trainer is None:
                 trainer = create_trainer_with_datasets(config, train_dataset, eval_dataset)
@@ -851,21 +955,10 @@ def quick_evaluate(trainer, dataset, num_samples=50):
             )
         
         response = tokenizer.decode(outputs[0][inputs.input_ids.shape[1]:], skip_special_tokens=True)
-        
-        try:
-            if "```json" in response:
-                response = response.split("```json")[1].split("```")[0]
-            elif "```" in response:
-                response = response.split("```")[1].split("```")[0]
-            
-            parsed = json.loads(response.strip())
-            decision = parsed.get("decision", "").lower()
-            
-            if decision == sample["ground_truth"]:
-                correct += 1
-            total += 1
-        except:
-            total += 1
+        decision = parse_decision(response)
+        total += 1
+        if decision is not None and decision == sample["ground_truth"]:
+            correct += 1
 
     model.train()
     return correct / total if total > 0 else 0
@@ -909,14 +1002,10 @@ def evaluate_by_loan_type(trainer, num_samples_per_type: int = 30) -> dict:
                     pad_token_id=tokenizer.pad_token_id,
                 )
             response = tokenizer.decode(outputs[0][inputs.input_ids.shape[1]:], skip_special_tokens=True)
-            try:
-                parsed = json.loads(response.strip())
-                decision = parsed.get("decision", "").lower()
-                if decision == sample["ground_truth"]:
-                    correct += 1
-                total += 1
-            except:
-                total += 1
+            decision = parse_decision(response)
+            total += 1
+            if decision is not None and decision == sample["ground_truth"]:
+                correct += 1
         results[loan_type] = {"correct": correct, "total": total,
                               "accuracy": correct / total if total > 0 else 0.0}
 
@@ -985,31 +1074,17 @@ def evaluate_adversarial(trainer, tracker: AdversarialTracker, num_samples: int 
                 )
             
             response = tokenizer.decode(
-                outputs[0][inputs.input_ids.shape[1]:], 
+                outputs[0][inputs.input_ids.shape[1]:],
                 skip_special_tokens=True
             )
-            
-            try:
-                if "```json" in response:
-                    response = response.split("```json")[1].split("```")[0]
-                elif "```" in response:
-                    response = response.split("```")[1].split("```")[0]
-                
-                parsed = json.loads(response.strip())
-                decision = parsed.get("decision", "").lower()
-                
-                is_correct = (decision == ground_truth)
-                tracker.record_result(strategy, is_correct)
-                
-                results_by_strategy[strategy]["total"] += 1
-                if is_correct:
-                    results_by_strategy[strategy]["correct"] += 1
-                    
-            except Exception:
-                # Parse failure counts as incorrect
-                tracker.record_result(strategy, False)
-                results_by_strategy[strategy]["total"] += 1
-    
+
+            decision = parse_decision(response)
+            results_by_strategy[strategy]["total"] += 1
+            is_correct = decision is not None and decision == ground_truth
+            tracker.record_result(strategy, is_correct)
+            if is_correct:
+                results_by_strategy[strategy]["correct"] += 1
+
     model.train()
 
     # Print summary
