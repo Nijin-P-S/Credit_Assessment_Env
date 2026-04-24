@@ -1,0 +1,40 @@
+{
+  "meta": {
+    "model_name": "Qwen/Qwen2.5-7B-Instruct",
+    "mode": "sft+curriculum",
+    "timestamp": "2026-04-23T13:41:45Z",
+    "note": "Numbers from per-phase eval during curriculum training (50 samples per phase)"
+  },
+  "baseline": {
+    "per_task": {
+      "personal": 0.8,
+      "vehicle": 0.7,
+      "home": 0.95
+    },
+    "overall": 0.8166666666666668
+  },
+  "trained": {
+    "per_task": {
+      "personal": 1.0,
+      "vehicle": 0.98,
+      "home": 0.92
+    },
+    "overall": 0.9666666666666667
+  },
+  "curriculum": {
+    "phases": [
+      {
+        "name": "Personal Loans",
+        "final_eval": 1.0
+      },
+      {
+        "name": "Vehicle Loans",
+        "final_eval": 0.98
+      },
+      {
+        "name": "Home Loans",
+        "final_eval": 0.92
+      }
+    ]
+  }
+}

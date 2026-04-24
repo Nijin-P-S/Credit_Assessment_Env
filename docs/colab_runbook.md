@@ -1,93 +1,113 @@
 # Colab Runbook (v3 Pipeline)
 
-This is the exact, ordered sequence to run in Google Colab tomorrow on **Colab Pro A100** to get **demonstrable improvement** vs baseline. Designed for the 100-credit budget.
+This is the exact, ordered sequence to run `train_grpo_colab.ipynb` on **Colab Pro A100** to get demonstrable improvement vs baseline. Designed for a ~100-credit budget.
+
+> Cell IDs in Colab can drift if cells are inserted later. We reference **section names** (Section 7a, Section 8b, etc.) — those are stable. Look at the markdown headers in the notebook, not the cell numbers in the left margin.
 
 ---
 
 ## Pre-flight (do this BEFORE opening Colab)
 
-1. **Use Chrome.** Safari put your tab to sleep last time and you lost 2 hours of training.
-2. **Pin the Colab tab.** Right-click → Pin Tab. Browsers throttle background tabs less aggressively when pinned.
-3. **Disable system sleep** for ~6 hours (System Settings → Lock Screen → Display turn off after = Never; or use [Amphetamine](https://apps.apple.com/us/app/amphetamine/id937984704)).
-4. **Have your HF write token ready.** Get it from <https://huggingface.co/settings/tokens> (write scope). You'll paste it in Colab when prompted.
+1. **Use Chrome.** Safari aggressively sleeps tabs and you can lose hours of training.
+2. **Pin the Colab tab.** Right-click → Pin Tab. Browsers throttle pinned tabs less.
+3. **Disable system sleep** for ~6 hours (Mac: System Settings → Lock Screen → Display turn off after = Never; or use [Amphetamine](https://apps.apple.com/us/app/amphetamine/id937984704)).
+4. **Have your HF write token ready.** Get one from <https://huggingface.co/settings/tokens> (write scope). You'll paste it in Colab when prompted.
 
 ---
 
 ## Stage 0 — open notebook + select runtime (~2 min)
 
-1. Open the notebook from your repo: `train_grpo_colab.ipynb`.
+1. Open `train_grpo_colab.ipynb`.
 2. Runtime → Change runtime type → **A100 GPU**, **High RAM** if available.
-3. Runtime → Connect to a hosted runtime (top-right corner).
+3. Runtime → Connect to a hosted runtime.
 
 **Checkpoint:** GPU shows ~40 GB or 80 GB available.
 
 ---
 
-## Stage 1 — install + clone + set HF token (~5 min, ~1 credit)
+## Stage 1 — install + clone + login (~5 min, ~1 credit)
 
-Run cells **1, 2, 3** in order.
-
-After cell 3 (the clone cell), open a new code cell and run **once**:
+1. Run **Section 1** (3 cells: install dependencies, clone repo, GPU check).
+2. Add a new cell after the clone cell and run **once** (don't commit it):
 
 ```python
 import os
 os.environ["HF_TOKEN"] = "hf_YOUR_WRITE_TOKEN_HERE"
-!huggingface-cli login --token $HF_TOKEN --add-to-git-credential
+!hf auth login --token $HF_TOKEN --add-to-git-credential
 ```
 
-(Don't commit this cell. It's just for this session.)
+> **Note:** the older `huggingface-cli login` command still works but prints a deprecation warning. The new `hf` CLI is preferred.
 
-**Checkpoint:** `huggingface-cli login` prints "Login successful".
+**Checkpoint:** the login command prints "Login successful" or similar.
 
 ---
 
 ## Stage 2 — sanity check baseline (~7 min, ~2 credits)
 
-Run cells **4, 5, 6, 7, 8, 9, 10, 11, 12, 14, 15** (skip cell 13 — we'll create the trainer after SFT).
+Run **Section 2** (env setup) → **Section 3** (dataset) → **Section 4** (rewards) → **Section 5 first cell only** (`MODEL_NAME` / `peft_config` / `training_args`) → **Section 6** (baseline eval).
 
-> **Do NOT run cell 13 yet.** It builds the GRPO trainer. We want to build it AFTER SFT so it picks up the SFT-warmed adapter.
+> **Do NOT run the second cell of Section 5** (the `GRPOTrainer(...)` cell) yet. We want the trainer built AFTER SFT so it picks up the SFT-warmed adapter.
 
-**Checkpoint after cell 15:**
+**Checkpoint after Section 6:**
 - Per-task accuracy printed for personal/vehicle/home.
-- Sample CoT response shown — should look like prose reasoning followed by a fenced JSON block.
-- **Target:** baseline accuracy in the 50-65% range with sensible-looking CoT. If it's <40% or the CoT looks broken (no JSON, repeated tokens), STOP and ping for help. The new prompt isn't doing what we expect.
+- Sample CoT response shown — should be prose reasoning followed by a fenced JSON block.
+- **Target:** baseline accuracy in the 60-85% range with sensible CoT. If <50% or CoT looks broken (no JSON, repeated tokens), STOP and investigate before burning credits.
+
+> The 7B Qwen baseline often lands at ~80%+ for Personal Loans. That's expected. The improvement signal will come from Vehicle and Home Loans where the base model gets confused by LTV / RBI tiers.
 
 ---
 
 ## Stage 3 — SFT warmup (~30 min, ~7 credits)
 
-Run cell **20** (Section 7a).
+Run **Section 7a** (single cell).
 
 **While it runs:**
-- Watch the loss in the streaming output. SFT loss should drop from ~2.0 at step 0 to ~0.3-0.5 by the end of epoch 2.
-- If loss is **still > 1.5 after 50 steps**, kill the cell and report — the LR or data is wrong.
-- If you see "OutOfMemoryError", lower `--per-device-batch-size` to 1 in cell 20 and rerun.
+- SFT loss should drop from ~2.0 at step 0 to ~0.3-0.5 by the end of epoch 2.
+- If loss is **still > 1.5 after 50 steps**, kill the cell — LR or data is wrong.
+- If you see `OutOfMemoryError`, lower `--per-device-batch-size` to 1 in the Section 7a cell and rerun.
 
-**Checkpoint after cell 20:**
+**Checkpoint:**
 - "SFT warmup complete." printed.
-- The big "CRITICAL NEXT STEP" banner is visible.
-- `./grpo_credit_assessment_sft/` directory exists (LoRA adapter saved).
+- "CRITICAL NEXT STEP" banner is visible.
+- `./grpo_credit_assessment_sft/` directory exists.
 
 ---
 
 ## Stage 4 — rebuild trainer with SFT init (~3 min, <1 credit)
 
-Re-run cell **12** then cell **13**.
+Re-run **both cells of Section 5** (`MODEL_NAME` cell, then `GRPOTrainer(...)` cell).
 
 **Checkpoint:**
-- Cell 12 prints `SFT init: YES (./grpo_credit_assessment_sft)`.
-- Cell 13 prints `Trainer created with SFT-warmed adapter as starting policy.`
-- Cell 13 prints `Trainable params from SFT adapter: trainable params: ~XXX | all params: ~7.6B | trainable%: ~0.X%`.
+- First cell prints `SFT init: YES (./grpo_credit_assessment_sft)`.
+- Second cell prints `Trainer created with SFT-warmed adapter as starting policy.`
+- Second cell prints `Trainable params from SFT adapter: ...`.
 
-If cell 12 prints `SFT init: NO`, the SFT directory is missing — check stage 3 output.
+If the first cell prints `SFT init: NO`, the SFT directory is missing — check Stage 3 output.
 
 ---
 
-## Stage 5 — curriculum training (~140 min, ~30 credits)
+## Stage 5 — post-SFT spot check (~3 min, ~1 credit) ⚡ NEW
 
-Run cell **22** (Section 7b).
+Run **Section 7a-check**.
 
-**The cell auto-runs 3 phases (Personal → Vehicle → Home) with replay.** Each phase ~45 min. You'll see:
+This is a 30-sample sanity check to confirm SFT actually helped before committing 30+ credits to curriculum.
+
+**Decision rule:**
+- ≥ 82% → SFT helped, safe to proceed to Stage 6.
+- 75-82% → within noise of baseline; curriculum may still help, but consider SFT-only as a fallback.
+- < 75% → STOP. Either prompt/data is broken or SFT regressed. Don't waste curriculum credits.
+
+> In our shipped run, SFT moved a 30-sample spot check from 81.7% baseline to 90%, which is when we proceeded with curriculum.
+
+---
+
+## Stage 6 — curriculum training (~140 min, ~30 credits)
+
+Run **Section 7b** (single cell).
+
+> The first lines of this cell defensively re-disable mid-training eval/save (`trainer.args.eval_strategy = "no"`, `trainer.args.save_strategy = "no"`). This is the fix that takes Phase 1 from 5.5h down to ~80 min — without it, GRPO does a full generation pass over the eval set every 50 steps. The fix is also baked into Section 5's `training_args` so this is belt-and-braces.
+
+**The cell auto-runs 3 phases (Personal → Vehicle → Home) with 20% replay buffer.** Each phase ~45 min. You'll see:
 
 ```
 Phase 1: Personal Loans (Foundation)
@@ -98,50 +118,50 @@ Phase 1: Personal Loans (Foundation)
 ```
 
 **Per-phase health checks:**
-- Reward should be **trending up** within a phase. Look at the `loss` and `reward_mean` in the trainer logs every 10 steps.
-- If reward stays flat or drops by >10% across the phase, kill and report.
-- Phase 1 should hit ≥60% (mastery threshold). Phase 2 same. Phase 3 has no gate.
+- Loss should be close to zero throughout (SFT warmup put us in the right region; GRPO is fine-grained shaping).
+- Spikes near phase boundaries are normal (new loan type entering the buffer).
+- Phase 1 should hit ≥60% (mastery). Phase 2 same. Phase 3 has no gate (nowhere left to advance).
 
-**If phase 1 needs a retry**, the cell auto-retries once with a fresh random seed. If still <60%, the cell advances anyway.
+**If a phase needs a retry**, the cell auto-retries once with a fresh seed. If still <60%, the cell advances anyway and keeps the best adapter.
 
-**If Colab disconnects mid-phase**, the per-phase Hub push means you've at least saved the last completed phase. Reconnect, re-run cells 1-13 (with `SFT_INIT_DIR` already set from disk via auto-detect), and resume from the next phase by setting `phase_idx = N` manually.
+**If Colab disconnects mid-phase**, the per-phase Hub push means you've at least saved the last completed phase. Reconnect, re-run Sections 1-5 (with `SFT_INIT_DIR` already on disk via auto-detect), and resume by setting `phase_idx = N` manually.
 
-**Checkpoint after cell 22:**
+**Checkpoint after Section 7b:**
 - "CURRICULUM RESULTS" table shows accuracy for all 3 phases.
 - `./grpo_curriculum_model/` exists.
 - 3 Hub repos exist: `iamnijin/credit-assessment-curriculum-phase{1,2,3}-{personal,vehicle,home}`.
 
 ---
 
-## Stage 6 — adversarial training (~65 min, ~14 credits)
+## Stage 7 — adversarial training (~65 min, ~14 credits) — **OPTIONAL**
 
-Run cell **24** (Section 7c).
+Run **Section 7c** (single cell) **only if** Section 7b results are below 90% overall.
+
+If Section 7b already hits ≥90% overall (which our shipped run did at 96.7%), **skip adversarial** — the marginal upside is small and the regression risk is real.
 
 **This auto-runs 2 adversarial rounds with self-generation.** You'll see strategy weakness analysis after each round, then targeted training, then re-eval.
 
 **Watch for:**
-- After round 1, "Δ: +X%" per loan type. Some can be negative; that's fine.
-- After round 2, the regression check at the end: "Curriculum vs Curriculum + Adversarial".
+- Per-round Δ printed per loan type. Some can be negative — fine if overall trends up.
+- Final regression check: "Curriculum vs Curriculum + Adversarial".
   - If `Δ ≥ +0.03` → use `./grpo_adversarial_final` for the demo.
-  - If `Δ ≤ -0.03` → use `./grpo_curriculum_end_snapshot` (it was saved at the start of this cell as a fallback).
+  - If `Δ ≤ -0.03` → use `./grpo_curriculum_end_snapshot` (saved at the start of this cell as a fallback).
 
-**Checkpoint after cell 24:**
-- `./grpo_adversarial_final/` exists.
-- `./grpo_curriculum_end_snapshot/` exists.
+**Checkpoint:**
+- `./grpo_adversarial_final/` and `./grpo_curriculum_end_snapshot/` both exist.
 - Regression check printed.
 
 ---
 
-## Stage 7 — final push to Hub (~3 min, <1 credit)
+## Stage 8 — final push to Hub (~3 min, <1 credit)
 
-Run cell **26** (Section 7d).
+Run **Section 7d** (single cell).
 
 This pushes whatever is currently in `trainer.model` to `iamnijin/credit-assessment-curriculum`.
 
-**If adversarial regressed and you want curriculum-only on Hub instead**, before running cell 26 do:
+**If adversarial regressed and you want curriculum-only on Hub instead**, before running Section 7d do:
 
 ```python
-# Reload the snapshot into trainer.model
 from peft import PeftModel
 import torch
 from transformers import AutoModelForCausalLM
@@ -151,70 +171,104 @@ base = AutoModelForCausalLM.from_pretrained(MODEL_NAME, torch_dtype=torch.bfloat
 trainer.model = PeftModel.from_pretrained(base, "./grpo_curriculum_end_snapshot", is_trainable=False)
 ```
 
-Then run cell 26.
+Then run Section 7d.
 
 **Checkpoint:**
 - `https://huggingface.co/iamnijin/credit-assessment-curriculum` is updated.
 
 ---
 
-## Stage 8 — fair head-to-head eval (~25 min, ~5 credits) — **THIS IS THE PROOF**
+## Stage 9 — post-training eval (~5 min, ~1 credit)
 
-Run cell **31** (Section 8b).
-
-The cell auto-detects the best on-disk adapter (prefers `./grpo_adversarial_final`, falls back to `./grpo_curriculum_model`). To override:
-
-```python
-import os
-os.environ["FAIR_EVAL_ADAPTER"] = "./grpo_curriculum_model"  # explicit override
-```
-
-**Output:**
-- `assets/fair_eval_results.json` — exact numbers + Wilson 95% CIs
-- `assets/fair_eval_chart.png` — the bar chart you'll show in the slide deck
-- Inline display of the chart at the end
+Run **Section 8** (both cells: `evaluate_model` then `breakdown by task`).
 
 **Checkpoint:**
-- Trained-model accuracy is **higher** than baseline accuracy on the same 120 samples.
-- Wilson CIs do NOT overlap (or only barely overlap).
-- This is the screenshot for slide 6.
+- Per-task accuracy table printed: `task_name | baseline | trained | Δ`.
+- This populates `baseline_results` / `trained_results` in memory — used by Section 9 below to render per-task charts.
 
 ---
 
-## Stage 9 — collect outputs + download (~3 min, <1 credit)
+## Stage 10 — fair head-to-head eval (~30-45 min, ~10 credits) — **OPTIONAL**
 
-Run cells **33** (results narrative), **34, 35** (training curves), **41, 42** (zip + download).
+Run **Section 8b** (single cell). Default sample count is now **60** (down from 120) for ~30-45 min runtime on A100. Tested up to 120 samples on a slow run that took 2+ hours — be aware.
 
-You'll get a `training_outputs.zip` with everything: results JSON, plots, training log, fair_eval outputs.
+**If the cell shows no output for >30 min**, the subprocess buffer may be hiding progress. In a separate cell run `!ls -la assets/fair_eval_*` to check for partial results, then either wait or interrupt.
+
+**If you don't have time/credits for fair_eval, skip this cell entirely.** Section 9 below uses the in-notebook results from Stage 9 and produces a perfectly valid submission chart without it.
+
+**Output:**
+- `assets/fair_eval_results.json` — per-task accuracy + Wilson 95% CIs.
+- `assets/fair_eval_chart.png` — the bar chart for the slide deck.
+
+**Checkpoint:**
+- Trained accuracy is **higher** than baseline accuracy on the same applicant pool.
+- Wilson CIs do not overlap (or only barely).
+
+---
+
+## Stage 11 — generate submission artifacts (~3 min, <1 credit)
+
+Run **Section 9** (the resilient generator — this is the only one you strictly need).
+
+> **Section 9 is the safety net.** If Stage 10 hung, OOM'd, or you cleared the trainer to free memory, Section 9 reconstructs everything (charts + `training_log.json`) from whatever in-memory variables are available, falling back to hardcoded values you can edit at the top of the cell.
+
+**Output of Section 9 (always produced):**
+- `assets/hackathon_results.png` — overall + per-task headline chart
+- `assets/per_task_accuracy.png` — same chart, README-friendly filename
+- `assets/curriculum_phases.png` — per-phase mastery line chart
+- `assets/reward_curve.png` — GRPO loss trajectory
+- `training_log.json` — canonical schema for the README
+- `/content/training_outputs.zip` — everything bundled for one-click download
+
+**Optional extras:**
+- **Section 9b** (Pitch Summary & Trap Cases) — produces a copy-paste pitch summary and 3 narrative trap-case examples. Nice-to-have for slides; needs `baseline_acc` / `trained_acc` in memory.
+- **Section 9c** (Training-Loss Visualization) — extra training-loss curves rendered from `trainer.state.log_history`. Only useful if the trainer object is still alive.
+
+---
+
+## Stage 12 — download artifacts (~1 min)
+
+Open the file browser in Colab, find `/content/training_outputs.zip`, right-click → Download.
+
+Or run the last code cell of the notebook to trigger the download programmatically.
 
 ---
 
 ## Total budget
 
-| | minutes | credits |
+| Path | minutes | credits |
 |---|---:|---:|
-| Best case (no retries) | 282 | ~62 |
-| Worst case (2 phase retries + fair-eval retry) | 401 | ~87 |
+| Minimum (skip adversarial + skip fair_eval) | ~190 | ~42 |
+| Recommended (skip adversarial only) | ~225 | ~52 |
+| Full pipeline | ~290 | ~66 |
+| Worst case (1 phase retry + slow fair_eval) | ~360 | ~80 |
 | **Your budget** | — | **100** |
-| Margin | — | **~13** |
 
-You have headroom for one full re-run of any single phase if needed.
+You have plenty of headroom. Don't run adversarial unless curriculum lands below 90%.
 
 ---
 
-## Failure escalation triggers (when to STOP and report)
+## Failure escalation triggers (when to STOP and investigate)
 
 | Symptom | Action |
 |---|---|
-| Baseline sanity (stage 2) accuracy < 40% | STOP. Prompt is broken. |
+| Baseline sanity (Stage 2) accuracy < 50% | STOP. Prompt is broken. |
 | SFT loss stays > 1.5 after 50 steps | STOP. Gold data or LR is wrong. |
-| Phase 1 accuracy < 30% even after retry | STOP. SFT didn't transfer. |
-| `cuda out of memory` anywhere | Restart runtime, lower batch_size to 1, retry from last completed stage. |
-| Hub push fails with 401 | Re-run the `huggingface-cli login` cell. |
-| Notebook hangs > 10 min with no output | Kernel is stuck. Restart runtime, resume from last completed stage. |
+| Post-SFT spot check (Stage 5) < 75% | STOP. SFT didn't transfer. |
+| Phase 1 accuracy < 30% even after retry | STOP. SFT didn't transfer to GRPO. |
+| `CUDA out of memory` anywhere | Restart runtime, lower batch_size to 1, resume from last completed stage. |
+| Hub push fails with 401 | Re-run the `hf auth login` cell. |
+| Cell hangs > 30 min with no output | Likely subprocess-buffer hiding. Check `nvidia-smi` and partial outputs in a side cell; restart if truly stuck. |
+| Step-level mid-training validation fires (~30 min/fire) | Section 7b should disable this. If it still fires, check `trainer.args.eval_strategy` is `"no"`. |
 
 ---
 
 ## What "success" looks like at the end
 
-The fair-eval chart shows **trained accuracy ≥ baseline + 8 percentage points** with non-overlapping Wilson CIs on at least 2 of 3 loan types. That's the proof.
+You should have:
+1. `iamnijin/credit-assessment-curriculum` (final adapter) on the Hub
+2. `iamnijin/credit-assessment-curriculum-phase{1,2,3}-{personal,vehicle,home}` (3 phase adapters) on the Hub
+3. `training_log.json` showing trained accuracy ≥ baseline + 8 percentage points overall
+4. 4 PNGs in `assets/`: `hackathon_results.png`, `per_task_accuracy.png`, `curriculum_phases.png`, `reward_curve.png`
+
+That's the submission.

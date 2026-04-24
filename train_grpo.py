@@ -5,6 +5,17 @@ GRPO Training Script for Credit Assessment Environment
 This script trains an LLM to make accurate loan underwriting decisions using
 Group Relative Policy Optimization (GRPO) from HuggingFace TRL.
 
+It mirrors the (proven) flow in train_grpo_colab.ipynb:
+
+    1. (Recommended) SFT warmup — run sft_warmup.py first to produce a LoRA
+       adapter at ./grpo_credit_assessment_sft. This script auto-detects
+       that directory and uses it as the GRPO starting policy.
+    2. Per-task curriculum — Phase 1 personal, Phase 2 vehicle, Phase 3 home.
+       Replay buffer (replay_fraction=0.2) prevents catastrophic forgetting.
+    3. (Optional) Adversarial self-play — disable with USE_ADVERSARIAL=0 if
+       curriculum already cleared the bar.
+    4. Final eval + JSON log + Hub push.
+
 The agent learns to:
 - Follow RBI guidelines (CIBIL score, FOIR, LTV ratios)
 - Detect trap cases (e.g., perfect profile with one hidden flaw)
@@ -12,14 +23,24 @@ The agent learns to:
 
 Usage (Local):
     pip install trl transformers datasets accelerate peft bitsandbytes
-    python train_grpo.py
+    python sft_warmup.py        # Optional but strongly recommended
+    python train_grpo.py        # Auto-loads SFT adapter if present
 
 Usage (Colab with GPU):
     See the companion notebook: train_grpo_colab.ipynb
 
 Environment Variables:
-    HF_TOKEN: HuggingFace token for pushing to hub (optional)
-    WANDB_API_KEY: Weights & Biases API key for logging (optional)
+    HF_TOKEN              HuggingFace token for pushing to hub (optional)
+    WANDB_API_KEY         Weights & Biases API key for logging (optional)
+    SFT_INIT_DIR          Override SFT adapter dir (default: auto-detect ./grpo_credit_assessment_sft)
+    PUSH_PER_PHASE        "1" → push adapter to Hub after each curriculum phase
+    HUB_MODEL_ID          Final model repo (default: iamnijin/credit-assessment-curriculum)
+    HF_PUSH_CHECKPOINTS   "0" → disable mid-training checkpoint pushes (recommended for HF Jobs)
+    EVAL_STRATEGY         GRPO mid-training eval; default "no" (set "steps" only if you really want it)
+    SAVE_STRATEGY         GRPO mid-training save; default "no"
+    CURRICULUM_MODE       "task" (default — recommended) or "difficulty"
+    SKIP_BASELINE         "1" → skip the baseline-evaluation pass
+    TRAINING_LOG_PATH     Output path for the JSON consumed by scripts/generate_plots.py
 """
 
 import json
@@ -37,7 +58,7 @@ if hf_token:
 
 import torch
 from datasets import Dataset
-from peft import LoraConfig
+from peft import LoraConfig, PeftModel
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from trl import GRPOConfig, GRPOTrainer
 
@@ -79,8 +100,10 @@ class TrainConfig:
     max_phase_retries: int = 1  # Only one retry — more retries overfit on noise
     phase_eval_samples: int = 50  # Per-phase quick eval (was 10 — too noisy)
     
-    # Adversarial Training
-    use_adversarial: bool = True  # Enable adversarial training phase after curriculum
+    # Adversarial Training. Disable with USE_ADVERSARIAL=0 if your curriculum
+    # already exceeds the target accuracy (in our 7B Colab run curriculum hit
+    # 96.7% so we skipped adversarial — same toggle here.)
+    use_adversarial: bool = os.getenv("USE_ADVERSARIAL", "1") == "1"
     adversarial_samples: int = 150  # Per round — more coverage of each targeted strategy
     adversarial_rounds: int = 2  # Round 3 produced no new signal in prior runs
     use_self_generation: bool = True  # Model generates its own hard cases each round
@@ -136,12 +159,33 @@ class TrainConfig:
     # (recommended for HF Jobs / Spaces to avoid slow uploads every save_steps).
     # The final model is always saved locally via trainer.save_model() regardless.
     push_to_hub: bool = os.getenv("HF_PUSH_CHECKPOINTS", "1") == "1"
-    hub_model_id: str = os.getenv("HUB_MODEL_ID", "iamnijin/credit-assessment-grpo-trained")
+    hub_model_id: str = os.getenv("HUB_MODEL_ID", "iamnijin/credit-assessment-curriculum")
 
     # Logging
-    logging_steps: int = 5
+    logging_steps: int = 10
+    # Mid-training validation is DISABLED by default. Setting eval_strategy="steps"
+    # makes GRPO run a full generation pass over the eval set every `eval_steps` —
+    # ~30 min per fire with num_generations=8 + max_completion_length=512.
+    # Phase 1 inflates from ~80 min to ~5.5 h. The per-phase quick_evaluate() inside
+    # train_with_curriculum already gives us the accuracy number we need.
+    # Override with EVAL_STRATEGY=steps if you really want step-level eval.
+    eval_strategy: str = os.getenv("EVAL_STRATEGY", "no")
     eval_steps: int = 50
-    save_steps: int = 200  # Larger interval = fewer checkpoints = faster on cloud
+    # Mid-training checkpointing is also disabled by default for the same reason
+    # (disk + latency). Per-phase Hub push (PUSH_PER_PHASE=1) is the safety net.
+    save_strategy: str = os.getenv("SAVE_STRATEGY", "no")
+    save_steps: int = 200
+
+    # SFT init: if set (or auto-detected), load this LoRA adapter on top of the
+    # base model BEFORE GRPO. This is the difference between a cold 81.7% run and
+    # a 96.7% post-SFT-then-GRPO run (the actual Colab result we shipped).
+    # Auto-detect: if `./grpo_credit_assessment_sft` exists on disk, use it.
+    sft_init_dir: Optional[str] = os.getenv("SFT_INIT_DIR")
+
+    # Per-phase Hub push (Colab-style): every curriculum phase uploads its best
+    # adapter to {hub_model_id}-phase{N}-{loan_type} so a disconnect can't wipe
+    # out hours of work. Disabled by default for local runs; enable via env.
+    push_per_phase: bool = os.getenv("PUSH_PER_PHASE", "0") == "1"
 
 
 # =============================================================================
@@ -528,6 +572,56 @@ def combined_reward(
 # Training
 # =============================================================================
 
+def _resolve_sft_init_dir(config: TrainConfig) -> Optional[str]:
+    """Return the SFT adapter directory if it exists, else None.
+
+    Resolution order:
+      1. Explicit config.sft_init_dir / SFT_INIT_DIR env var
+      2. Auto-detect ./grpo_credit_assessment_sft (the default sft_warmup.py
+         output directory, matches what train_grpo_colab.ipynb uses)
+    """
+    candidate = config.sft_init_dir or "./grpo_credit_assessment_sft"
+    if os.path.isdir(candidate) and os.path.isfile(os.path.join(candidate, "adapter_config.json")):
+        return candidate
+    return None
+
+
+def _build_model_for_grpo(config: TrainConfig):
+    """Return (model_or_name, peft_config_or_none) for GRPOTrainer.
+
+    If an SFT adapter exists, load base model + SFT LoRA as a PeftModel and pass
+    it in directly. This matches the Colab pipeline (cell 13) and is the only
+    way to start GRPO from a warmed policy. Otherwise, hand off the model name
+    string and a fresh peft_config — TRL will build the LoRA itself.
+    """
+    sft_dir = _resolve_sft_init_dir(config)
+
+    if sft_dir is None:
+        peft_config = None
+        if config.use_peft:
+            peft_config = LoraConfig(
+                r=config.lora_r,
+                lora_alpha=config.lora_alpha,
+                lora_dropout=config.lora_dropout,
+                target_modules=["q_proj", "k_proj", "v_proj", "o_proj"],
+                task_type="CAUSAL_LM",
+            )
+        return config.model_name, peft_config
+
+    print(f"Loading base model + SFT adapter from {sft_dir}...")
+    base = AutoModelForCausalLM.from_pretrained(
+        config.model_name,
+        dtype=torch.bfloat16 if torch.cuda.is_available() and torch.cuda.is_bf16_supported() else torch.float16,
+        device_map="auto",
+    )
+    model = PeftModel.from_pretrained(base, sft_dir, is_trainable=True)
+    try:
+        model.print_trainable_parameters()
+    except Exception:
+        pass
+    return model, None
+
+
 def create_trainer(config: TrainConfig) -> GRPOTrainer:
     """Create and configure the GRPO trainer."""
     
@@ -546,7 +640,8 @@ def create_trainer(config: TrainConfig) -> GRPOTrainer:
     print(f"Generating {config.num_eval_samples} evaluation samples...")
     eval_dataset = generate_dataset(config.num_eval_samples, seed=123)
     
-    # Configure GRPO
+    # Configure GRPO. eval_strategy/save_strategy default to "no" — see TrainConfig
+    # comments for why (mid-training generation = 30 min/fire, kills runtime).
     grpo_config = GRPOConfig(
         output_dir=config.output_dir,
         num_train_epochs=config.num_train_epochs,
@@ -558,9 +653,10 @@ def create_trainer(config: TrainConfig) -> GRPOTrainer:
         num_generations=config.num_generations,
         max_completion_length=config.max_completion_length,
         logging_steps=config.logging_steps,
-        eval_strategy="steps",
-        eval_steps=config.eval_steps,
-        save_steps=config.save_steps,
+        eval_strategy=config.eval_strategy,
+        eval_steps=config.eval_steps if config.eval_strategy != "no" else None,
+        save_strategy=config.save_strategy,
+        save_steps=config.save_steps if config.save_strategy != "no" else None,
         gradient_checkpointing=True,
         bf16=torch.cuda.is_available() and torch.cuda.is_bf16_supported(),
         fp16=torch.cuda.is_available() and not torch.cuda.is_bf16_supported(),
@@ -569,20 +665,11 @@ def create_trainer(config: TrainConfig) -> GRPOTrainer:
         report_to="wandb" if os.environ.get("WANDB_API_KEY") else "none",
     )
     
-    # Configure LoRA if enabled
-    peft_config = None
-    if config.use_peft:
-        peft_config = LoraConfig(
-            r=config.lora_r,
-            lora_alpha=config.lora_alpha,
-            lora_dropout=config.lora_dropout,
-            target_modules=["q_proj", "k_proj", "v_proj", "o_proj"],
-            task_type="CAUSAL_LM",
-        )
-    
-    # Create trainer
+    # SFT-warmed PeftModel (if available) or model-name + fresh peft_config
+    model_or_name, peft_config = _build_model_for_grpo(config)
+
     trainer = GRPOTrainer(
-        model=config.model_name,
+        model=model_or_name,
         args=grpo_config,
         train_dataset=train_dataset,
         eval_dataset=eval_dataset,
@@ -590,7 +677,7 @@ def create_trainer(config: TrainConfig) -> GRPOTrainer:
         peft_config=peft_config,
         reward_funcs=combined_reward,  # Combined: 80% decision + 20% format
     )
-    
+
     return trainer
 
 
@@ -630,7 +717,7 @@ def evaluate_model(trainer: GRPOTrainer, num_samples: int = 60) -> dict:
         with torch.no_grad():
             outputs = model.generate(
                 **inputs,
-                max_new_tokens=256,
+                max_new_tokens=512,  # match GRPO max_completion_length so CoT isn't truncated
                 do_sample=False,
                 pad_token_id=tokenizer.pad_token_id,
             )
@@ -857,6 +944,22 @@ def train_with_curriculum(config: TrainConfig):
 
         phase_results.append((phase_name, best_attempt_acc if best_attempt_acc >= 0 else phase_acc))
 
+        # Per-phase Hub push: same safety net as the Colab notebook. If the
+        # script crashes / gets disconnected during a later phase, the prior
+        # phase's adapter is already on the Hub and can be re-loaded.
+        if config.push_per_phase and config.hub_model_id:
+            target_label = (phases[phase_idx][0] or f"phase{phase_idx+1}").replace(" ", "")
+            phase_hub_id = f"{config.hub_model_id}-phase{phase_idx+1}-{target_label}"
+            try:
+                print(f"  Pushing phase {phase_idx+1} adapter to {phase_hub_id}...")
+                trainer.push_to_hub(
+                    repo_id=phase_hub_id,
+                    commit_message=f"Phase {phase_idx+1} ({target_label}) — {best_attempt_acc*100:.1f}% on per-phase eval",
+                )
+                print(f"  ✓ https://huggingface.co/{phase_hub_id}")
+            except Exception as e:
+                print(f"  ⚠ Per-phase Hub push failed (continuing): {e}")
+
     print("\n" + "="*60)
     print("CURRICULUM LEARNING RESULTS")
     print("="*60)
@@ -867,10 +970,12 @@ def train_with_curriculum(config: TrainConfig):
 
 
 def create_trainer_with_datasets(config: TrainConfig, train_dataset, eval_dataset):
-    """Create trainer with provided datasets (used for curriculum learning)."""
-    from transformers import AutoTokenizer
-    from peft import LoraConfig as PeftLoraConfig
-    
+    """Create trainer with provided datasets (used for curriculum learning).
+
+    Honors SFT init: if `./grpo_credit_assessment_sft` (or SFT_INIT_DIR) exists,
+    GRPO starts from the SFT-warmed adapter. This is what the Colab pipeline
+    does and is required to reproduce the 96.7% trained accuracy.
+    """
     tokenizer = AutoTokenizer.from_pretrained(config.model_name)
     tokenizer.padding_side = "left"
     if tokenizer.pad_token is None:
@@ -887,27 +992,20 @@ def create_trainer_with_datasets(config: TrainConfig, train_dataset, eval_datase
         num_generations=config.num_generations,
         max_completion_length=config.max_completion_length,
         logging_steps=config.logging_steps,
-        eval_strategy="steps",
-        eval_steps=config.eval_steps,
-        save_steps=config.save_steps,
+        eval_strategy=config.eval_strategy,
+        eval_steps=config.eval_steps if config.eval_strategy != "no" else None,
+        save_strategy=config.save_strategy,
+        save_steps=config.save_steps if config.save_strategy != "no" else None,
         gradient_checkpointing=True,
         bf16=torch.cuda.is_available() and torch.cuda.is_bf16_supported(),
         fp16=torch.cuda.is_available() and not torch.cuda.is_bf16_supported(),
         report_to="none",
     )
     
-    peft_config = None
-    if config.use_peft:
-        peft_config = PeftLoraConfig(
-            r=config.lora_r,
-            lora_alpha=config.lora_alpha,
-            lora_dropout=config.lora_dropout,
-            target_modules=["q_proj", "k_proj", "v_proj", "o_proj"],
-            task_type="CAUSAL_LM",
-        )
-    
+    model_or_name, peft_config = _build_model_for_grpo(config)
+
     trainer = GRPOTrainer(
-        model=config.model_name,
+        model=model_or_name,
         args=grpo_config,
         train_dataset=train_dataset,
         eval_dataset=eval_dataset,
@@ -915,7 +1013,7 @@ def create_trainer_with_datasets(config: TrainConfig, train_dataset, eval_datase
         peft_config=peft_config,
         reward_funcs=combined_reward,
     )
-    
+
     return trainer
 
 
@@ -949,7 +1047,7 @@ def quick_evaluate(trainer, dataset, num_samples=50):
         with torch.no_grad():
             outputs = model.generate(
                 **inputs,
-                max_new_tokens=256,
+                max_new_tokens=512,  # match GRPO max_completion_length so CoT isn't truncated
                 do_sample=False,
                 pad_token_id=tokenizer.pad_token_id,
             )
@@ -998,7 +1096,7 @@ def evaluate_by_loan_type(trainer, num_samples_per_type: int = 30) -> dict:
             inputs = tokenizer(prompt_text, return_tensors="pt").to(model.device)
             with torch.no_grad():
                 outputs = model.generate(
-                    **inputs, max_new_tokens=256, do_sample=False,
+                    **inputs, max_new_tokens=512,  # match GRPO max_completion_length so CoT isn't truncated do_sample=False,
                     pad_token_id=tokenizer.pad_token_id,
                 )
             response = tokenizer.decode(outputs[0][inputs.input_ids.shape[1]:], skip_special_tokens=True)
@@ -1068,7 +1166,7 @@ def evaluate_adversarial(trainer, tracker: AdversarialTracker, num_samples: int 
             with torch.no_grad():
                 outputs = model.generate(
                     **inputs,
-                    max_new_tokens=256,
+                    max_new_tokens=512,  # match GRPO max_completion_length so CoT isn't truncated
                     do_sample=False,
                     pad_token_id=tokenizer.pad_token_id,
                 )
@@ -1406,7 +1504,13 @@ def main():
     # Print training info
     print(f"\nTraining configuration:")
     print(f"  Model: {config.model_name}")
+    sft_dir = _resolve_sft_init_dir(config)
+    print(f"  SFT init: {'YES (' + sft_dir + ')' if sft_dir else 'NO (cold start — strongly recommend running sft_warmup.py first)'}")
+    print(f"  Push per phase: {config.push_per_phase} → {config.hub_model_id}-phase{{N}}-{{loan}}")
+    print(f"  Eval/save strategy: {config.eval_strategy} / {config.save_strategy}")
     print(f"  Curriculum Learning: {config.use_curriculum}")
+    print(f"  Curriculum mode: {config.curriculum_mode}")
+    print(f"  Replay fraction: {config.replay_fraction}")
     if config.use_curriculum:
         print(f"  Samples per phase: {config.samples_per_phase}")
         print(f"  Total phases: 3 (easy → medium → hard)")
