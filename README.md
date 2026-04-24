@@ -36,7 +36,7 @@ Built on [OpenEnv](https://github.com/facebookresearch/openenv) · trained with 
 | ▶️ **Train it yourself in Colab** | [`train_grpo_colab.ipynb`](train_grpo_colab.ipynb) · [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/Nijin-P-S/Credit_Assessment_Env/blob/main/train_grpo_colab.ipynb) |
 | 📺 **Demo video (<2 min)** | [YouTube](https://www.youtube.com/watch?v=d4feqxbc87o) |
 | 📝 **Project writeup (HF)** | [iamnijin/credit-assessment-curriculum](https://huggingface.co/iamnijin/credit-assessment-curriculum) |
-| 📊 **Slide deck** | [Google Slides](https://docs.google.com/presentation/d/1a23eU9c3dIxvPGIKmg_sXPhP2fua97F2QYxI4ZRBaKM/edit?usp=sharing) |
+| 📊 **Slide deck** | [Google Slides](https://docs.google.com/presentation/d/1J6wZbd4EyOqlfikty9F1kk4qLuRmRMtNY7Mk3Qf2ls0/edit?usp=sharing) |
 | 🛠 **Colab runbook** | [`docs/colab_runbook.md`](docs/colab_runbook.md) |
 | ✅ **Submission validator output** | [`assets/validation_output.txt`](assets/validation_output.txt) (3/3 checks pass) |
 
