@@ -74,7 +74,7 @@ This submission addresses **both** themes; the evidence shipped is strongest for
 ### Secondary: Theme #4 — Self-Improvement
 - **Performance-gated curriculum** — Personal → Vehicle → Home, gated by per-phase accuracy (60% mastery threshold), not a fixed step count. Each phase produces a checkpoint that becomes the starting policy for the next — that's the self-improvement chain you can see climbing in [`assets/curriculum_phases.png`](assets/curriculum_phases.png)
 - **Replay buffer** — past-phase samples are mixed into later phases (default `replay_fraction=0.2`) to prevent catastrophic forgetting
-- **Adversarial self-play, one round actually run** — after the curriculum cleared every mastery gate, we ran a 50-step adversarial round (LR=5e-7, β=0.4, KL anchor to the curriculum reference) trained exclusively on the 9 trap profiles. The result lifted Home Loan accuracy from 87.5% → 90% (one extra correct on n=40) with **zero regression on any other task** and is published as [`iamnijin/credit-assessment-adversarial`](https://huggingface.co/iamnijin/credit-assessment-adversarial). The `AdversarialTracker` in [`train_utils.py`](train_utils.py) records which of the 9 trap profiles the model fails most so subsequent rounds can target weaknesses dynamically.
+- **Adversarial self-play, one round actually run** — after the curriculum cleared every mastery gate, we ran a 50-step adversarial round (LR=5e-7, β=0.4, KL anchor to the curriculum reference) trained exclusively on the 10 trap profiles. The result lifted Home Loan accuracy from 87.5% → 90% (one extra correct on n=40) with **zero regression on any other task** and is published as [`iamnijin/credit-assessment-adversarial`](https://huggingface.co/iamnijin/credit-assessment-adversarial). The `AdversarialTracker` in [`train_utils.py`](train_utils.py) records which of the 10 trap profiles the model fails most so subsequent rounds can target weaknesses dynamically.
 
 ---
 
@@ -108,7 +108,7 @@ with env:
 
 ## The Environment
 
-Three loan types of escalating difficulty. Each `reset()` produces a fresh applicant — good, bad, borderline, or one of 9 explicitly-designed **trap profiles** (full list in [§ Themes Addressed](#themes-addressed)).
+Three loan types of escalating difficulty. Each `reset()` produces a fresh applicant — good, bad, borderline, or one of 10 explicitly-designed **trap profiles** (full list in [§ Themes Addressed](#themes-addressed)).
 
 | Task | Loan Type | Difficulty | What the agent must reason about |
 |------|-----------|------------|----------------------------------|
@@ -147,7 +147,7 @@ Episodes terminate on a final `approve` or `reject`, or after 3 steps (cap).
 
 ### Trap profiles — what makes this hard
 
-The environment ships **9 trap profiles** (defined in [`train_utils.py`](train_utils.py): `trap_credit`, `trap_foir`, `trap_ltv`, `trap_credit_ltv`, `trap_rera_perfect`, `trap_ltv_tier`, `trap_employment`, `trap_foir_coapplicant`, `trap_all_green_one_red`). The most painful ones for LLMs:
+The environment ships **10 trap profiles** (defined as `ADVERSARIAL_STRATEGIES` in [`train_utils.py`](train_utils.py): `threshold_credit`, `threshold_foir`, `perfect_but_rera`, `perfect_but_ltv_tier`, `coapplicant_trap`, `high_income_low_cibil`, `employment_trap_home`, `vehicle_ltv_trap`, `docs_incomplete_good`, `borderline_multiple`). The most painful ones for LLMs:
 
 - **Threshold credit (CIBIL 699)** — a single point below the cutoff with everything else perfect. Pattern-matching says approve; rules say reject.
 - **Perfect-but-RERA** — 830 CIBIL, ₹2L income, 20% FOIR, **RERA = No**. The −20 reward is the single worst outcome in the environment.
@@ -200,7 +200,7 @@ The default mode is the full pipeline: **SFT warmup → per-task curriculum (wit
 
 1. **SFT warmup** ([`sft_warmup.py`](sft_warmup.py)) — 600 supervised examples, 2 epochs. Anchors the model on the desired output format (chain-of-thought + JSON) before GRPO starts. *In our run, a quick 30-sample post-SFT spot check (separate from the n=120 fair-eval) returned 90% accuracy, which we used purely as a "format is anchored, safe to launch curriculum GRPO" gate — not as a benchmark number.*
 2. **Per-task curriculum** ([`train_grpo.py`](train_grpo.py)) — 3 phases (Personal → Vehicle → Home), 400 samples each, with 20% replay from earlier phases. Produces `iamnijin/credit-assessment-curriculum` (93.3% on n=120).
-3. **Adversarial round** ([Section 15 of the Colab notebook](train_grpo_colab.ipynb)) — 50 GRPO steps trained exclusively on the 9 trap profiles, starting from the curriculum adapter, LR=5e-7, β=0.4 to anchor against drift. Produces `iamnijin/credit-assessment-adversarial` (94.2% on n=120 — the headline). The `AdversarialTracker` records per-strategy failure rates so subsequent rounds can re-weight toward the worst trap automatically.
+3. **Adversarial round** ([Section 15 of the Colab notebook](train_grpo_colab.ipynb)) — 50 GRPO steps trained exclusively on the 10 trap profiles, starting from the curriculum adapter, LR=5e-7, β=0.4 to anchor against drift. Produces `iamnijin/credit-assessment-adversarial` (94.2% on n=120 — the headline). The `AdversarialTracker` records per-strategy failure rates so subsequent rounds can re-weight toward the worst trap automatically.
 
 ### Why this combination beats vanilla GRPO
 
@@ -327,7 +327,7 @@ Credit_Assessment_Env/
 │   ├── ground_truth/{personal,vehicle,home}_loan.py # Decision rules
 │   ├── rewards/{personal,vehicle,home}_loan.py      # Reward shaping
 │   └── helpers/profile_builder.py                   # Builds LLM-readable narratives
-├── train_utils.py             # AdversarialTracker + 9 trap-profile generators
+├── train_utils.py             # AdversarialTracker + 10 trap-profile generators
 ├── scripts/
 │   ├── fair_eval.py           # Apples-to-apples baseline-vs-trained with Wilson CIs
 │   └── generate_plots.py      # Re-render all charts from training_log.json

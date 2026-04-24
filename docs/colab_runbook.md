@@ -252,7 +252,7 @@ Run **Section 14 — Hardened Fair-Eval (n=120 with Wilson 95% CIs)**. Self-cont
 
 Use this if you want concrete adversarial-round evidence for Theme #4 (Self-Improvement). Only run after Stage 13 so you have a fresh n=120 curriculum baseline to compare against.
 
-Run **Section 15 — One Adversarial Round on Top of Curriculum**. Loads the curriculum adapter from HF, runs 50 GRPO steps trained on the 9 trap profiles, pushes to a **separate** repo `iamnijin/credit-assessment-adversarial` (the curriculum adapter is never overwritten), then re-evaluates at n=120.
+Run **Section 15 — One Adversarial Round on Top of Curriculum**. Loads the curriculum adapter from HF, runs 50 GRPO steps trained on the 10 trap profiles, pushes to a **separate** repo `iamnijin/credit-assessment-adversarial` (the curriculum adapter is never overwritten), then re-evaluates at n=120.
 
 **Output:**
 - `iamnijin/credit-assessment-adversarial` on the Hub (new model).
