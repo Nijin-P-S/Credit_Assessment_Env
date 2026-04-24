@@ -234,6 +234,37 @@ Or run the last code cell of the notebook to trigger the download programmatical
 
 ---
 
+## Stage 13 (post-submission polish, ~30 min, ~5 credits) — **OPTIONAL**
+
+Use this when the curriculum adapter is already pushed to HF and you want to harden the headline numbers without re-training.
+
+Run **Section 12 — Hardened Fair-Eval (n=120 with Wilson 95% CIs)**. Self-contained: only needs Stages 1 (install) and 1 (clone) to have run in the current Colab session. Pulls the curriculum adapter directly from `iamnijin/credit-assessment-curriculum` and re-evaluates at n=120 (40/task).
+
+**Output:**
+- `assets/fair_eval_results.json` — overwritten with n=120 numbers + Wilson CIs.
+- `assets/fair_eval_chart.png` — the bar chart with CIs.
+
+**Why bother:** the n=60 headline has wide per-task CIs (~±15pp). At n=120 they tighten to ~±9pp — strong enough to defend per-task improvements against statistical objections.
+
+---
+
+## Stage 14 (theme #4 evidence, ~40 min, ~6 credits) — **OPTIONAL, MEDIUM RISK**
+
+Use this if you want concrete adversarial-round evidence for Theme #4 (Self-Improvement). Only run after Stage 13 so you have a fresh n=120 curriculum baseline to compare against.
+
+Run **Section 13 — One Adversarial Round on Top of Curriculum**. Loads the curriculum adapter from HF, runs 50 GRPO steps trained on the 9 trap profiles, pushes to a **separate** repo `iamnijin/credit-assessment-adversarial` (the curriculum adapter is never overwritten), then re-evaluates at n=120.
+
+**Output:**
+- `iamnijin/credit-assessment-adversarial` on the Hub (new model).
+- `assets/fair_eval_results_adversarial.json` + `assets/fair_eval_chart_adversarial.png`.
+- `assets/fair_eval_results_curriculum.json` + `assets/fair_eval_chart_curriculum.png` (auto-backed-up from Stage 13 before adversarial overwrites it).
+
+**Decision rule after the cell finishes:**
+- If `adversarial.trained.overall >= curriculum.trained.overall` → update README headline to point at the adversarial adapter.
+- If `adversarial < curriculum` → keep curriculum as headline; report the adversarial run as **honest negative evidence** (this is itself defensible — it shows you measured rather than over-claimed).
+
+---
+
 ## Total budget
 
 | Path | minutes | credits |
