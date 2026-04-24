@@ -331,7 +331,7 @@ Credit_Assessment_Env/
 ├── scripts/
 │   ├── fair_eval.py           # Apples-to-apples baseline-vs-trained with Wilson CIs
 │   └── generate_plots.py      # Re-render all charts from training_log.json
-├── tests/                     # 35 pytest cases (ground truth + rewards + adversarial)
+├── tests/                     # 63 pytest cases (ground truth + rewards + adversarial)
 ├── docs/                      # colab_runbook.md
 └── assets/                    # Charts + slide assets
 ```
@@ -356,7 +356,7 @@ No changes needed to `models.py`, `client.py`, or the Dockerfile.
 | OpenEnv compliance | ✅ | `openenv validate` passes — see `assets/validation_output.txt` |
 | HF Space live | ✅ | `/reset` responds — validator pings it |
 | Docker build | ✅ | Validator runs `docker build` |
-| Tests | ✅ | 35 pytest cases (`pytest`) — ground truth, rewards, adversarial strategies |
+| Tests | ✅ | 63 pytest cases (`pytest`) — ground truth, rewards, adversarial strategies |
 | Client/server separation | ✅ | `client.py` never imports from `server/` |
 | Gym API | ✅ | `reset()`, `step()`, `state()` |
 | Reproducible eval | ✅ | `training_log.json` committed; `scripts/generate_plots.py` re-renders charts deterministically |
