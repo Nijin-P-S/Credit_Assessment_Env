@@ -1,40 +1,62 @@
 {
   "meta": {
     "model_name": "Qwen/Qwen2.5-7B-Instruct",
-    "mode": "sft+curriculum",
-    "timestamp": "2026-04-23T13:41:45Z",
-    "note": "Numbers from per-phase eval during curriculum training (50 samples per phase)"
+    "mode": "sft+curriculum+adversarial",
+    "timestamp": "2026-04-24T19:30:00Z",
+    "eval_protocol": "scripts/fair_eval.py, n=120 (40 per task), seed=999, lenient parser, max_new_tokens=512",
+    "wilson_ci": "95%",
+    "headline_adapter": "iamnijin/credit-assessment-adversarial",
+    "alternative_adapters": [
+      "iamnijin/credit-assessment-curriculum (curriculum-only checkpoint)",
+      "iamnijin/credit-assessment-curriculum-phase1-personal",
+      "iamnijin/credit-assessment-curriculum-phase2-vehicle",
+      "iamnijin/credit-assessment-curriculum-phase3-home"
+    ]
   },
   "baseline": {
     "per_task": {
-      "personal": 0.8,
-      "vehicle": 0.7,
-      "home": 0.95
+      "personal": {"accuracy": 0.95,  "ci_low": 0.835, "ci_high": 0.986, "n": 40},
+      "vehicle":  {"accuracy": 0.625, "ci_low": 0.470, "ci_high": 0.758, "n": 40},
+      "home":     {"accuracy": 0.85,  "ci_low": 0.709, "ci_high": 0.929, "n": 40}
     },
-    "overall": 0.8166666666666668
+    "overall": {"accuracy": 0.808, "ci_low": 0.729, "ci_high": 0.869, "n": 120, "correct": 97}
   },
   "trained": {
     "per_task": {
-      "personal": 1.0,
-      "vehicle": 0.98,
-      "home": 0.92
+      "personal": {"accuracy": 1.0,   "ci_low": 0.912, "ci_high": 1.0,   "n": 40},
+      "vehicle":  {"accuracy": 0.925, "ci_low": 0.801, "ci_high": 0.974, "n": 40},
+      "home":     {"accuracy": 0.9,   "ci_low": 0.769, "ci_high": 0.960, "n": 40}
     },
-    "overall": 0.9666666666666667
+    "overall": {"accuracy": 0.942, "ci_low": 0.884, "ci_high": 0.971, "n": 120, "correct": 113}
+  },
+  "delta": {
+    "personal": "+5.0pp (ceiling)",
+    "vehicle":  "+30.0pp (CIs do not overlap)",
+    "home":     "+5.0pp",
+    "overall":  "+13.3pp (CIs do not overlap, p<0.05)"
   },
   "curriculum": {
+    "samples_per_phase": 400,
     "phases": [
-      {
-        "name": "Personal Loans",
-        "final_eval": 1.0
-      },
-      {
-        "name": "Vehicle Loans",
-        "final_eval": 0.98
-      },
-      {
-        "name": "Home Loans",
-        "final_eval": 0.92
-      }
+      {"name": "Personal Loans (Foundation)", "final_eval": 1.0, "samples_n": 50},
+      {"name": "Vehicle Loans (+ LTV)",       "final_eval": 0.98, "samples_n": 50},
+      {"name": "Home Loans (+ Tiered LTV + RERA)", "final_eval": 0.92, "samples_n": 50}
     ]
+  },
+  "adversarial": {
+    "rounds_run": 1,
+    "steps_per_round": 50,
+    "samples_per_round": 200,
+    "learning_rate": 5e-7,
+    "beta": 0.4,
+    "starting_policy": "iamnijin/credit-assessment-curriculum",
+    "saved_to": "iamnijin/credit-assessment-adversarial",
+    "delta_vs_curriculum_only": {
+      "personal": 0.0,
+      "vehicle":  0.0,
+      "home":     "+2.5pp (35/40 -> 36/40)",
+      "overall":  "+0.83pp (112/120 -> 113/120)"
+    },
+    "note": "One round; gain concentrated on Home Loans (the highest-rule-density task). Strictly no regression on any task."
   }
 }

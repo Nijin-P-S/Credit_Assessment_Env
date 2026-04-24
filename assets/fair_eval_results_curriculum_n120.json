@@ -1,0 +1,27 @@
+{
+  "meta": {
+    "base_model": "Qwen/Qwen2.5-7B-Instruct",
+    "adapter_source": "iamnijin/credit-assessment-curriculum",
+    "num_samples": 120,
+    "seed": 999,
+    "difficulty": "all",
+    "samples_per_type": {"personal": 40, "vehicle": 40, "home": 40},
+    "parser": "lenient (markdown-fence stripping)"
+  },
+  "baseline": {
+    "per_task": {
+      "personal": {"correct": 38, "total": 40, "parse_failures": 0, "accuracy": 0.95, "ci_low": 0.8349582918, "ci_high": 0.9861796229},
+      "vehicle":  {"correct": 25, "total": 40, "parse_failures": 2, "accuracy": 0.625, "ci_low": 0.4703216005, "ci_high": 0.7577722646},
+      "home":     {"correct": 34, "total": 40, "parse_failures": 0, "accuracy": 0.85, "ci_low": 0.7092737396, "ci_high": 0.9293890829}
+    },
+    "overall": {"correct": 97, "total": 120, "accuracy": 0.8083333333, "ci_low": 0.7287868300, "ci_high": 0.8687506695}
+  },
+  "trained": {
+    "per_task": {
+      "personal": {"correct": 40, "total": 40, "parse_failures": 0, "accuracy": 1.0,   "ci_low": 0.9123754607, "ci_high": 1.0},
+      "vehicle":  {"correct": 37, "total": 40, "parse_failures": 1, "accuracy": 0.925, "ci_low": 0.8013546984, "ci_high": 0.9741644432},
+      "home":     {"correct": 35, "total": 40, "parse_failures": 0, "accuracy": 0.875, "ci_low": 0.7388757933, "ci_high": 0.9454058023}
+    },
+    "overall": {"correct": 112, "total": 120, "accuracy": 0.9333333333, "ci_low": 0.8739473292, "ci_high": 0.9658351025}
+  }
+}
