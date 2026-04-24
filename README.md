@@ -362,29 +362,24 @@ Run the full validator locally:
 
 ---
 
-## Baseline Comparison (proprietary models, sanity check)
+## Sanity-Check Bookends
 
-For context on where general-purpose APIs land on this environment (10 episodes/task, seed 42):
+For context on the difficulty range of this environment, two deterministic baselines from `baseline.py` (100 episodes/task, seed 42):
 
 | Agent | Personal | Vehicle | Home | Overall |
 |---|---|---|---|---|
 | Random | 0.467 | 0.350 | 0.400 | 0.406 |
 | Rule-Based (oracle) | 1.000 | 1.000 | 1.000 | 1.000 |
-| GPT-4o-mini | 0.900 | 0.900 | 0.700 | 0.833 |
-| GPT-5 | 0.700 | 0.700 | 0.700 | 0.700 |
-| **Qwen2.5-7B baseline (ours)** | 0.800 | 0.700 | 0.950 | 0.817 |
-| **Qwen2.5-7B trained (ours)** | **1.000** | **0.980** | 0.920 | **0.967** |
 
-Our trained Qwen2.5-7B exceeds GPT-4o-mini on every task and matches the rule-based oracle on Personal Loans.
+Random tops out near 40% — confirming the environment isn't trivially solvable by guessing. The rule-based agent hits 100% by construction (it mirrors `calculate_ground_truth` exactly), confirming the rules are internally consistent and the env grading is correct. The rigorous LLM comparison (Qwen baseline vs trained, 60 samples with Wilson CIs) lives in the [Headline Result](#headline-result) section above.
 
 ---
 
-## What's Next
+## Roadmap
 
-- 🎬 Demo video (link will appear in the table above once uploaded)
-- 📝 Mini-blog with the training-day timeline (link will appear above)
 - 🧪 Extend to business / education / gold loans using the 4-file pattern documented above
-- 📊 Run the full `scripts/fair_eval.py` head-to-head with Wilson CIs on the larger Round 2 compute budget
+- 📊 Run `scripts/fair_eval.py` against frontier APIs (GPT-4o-mini, Claude, Gemini) on the same 60-applicant slice with the matched CoT prompt for a strict head-to-head
+- 🔄 Re-enable the adversarial self-play loop now that the curriculum baseline is strong, and measure whether self-generated traps push Home Loan accuracy past the 92% ceiling
 
 ---
 
