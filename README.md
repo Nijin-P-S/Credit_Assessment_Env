@@ -36,9 +36,6 @@ Built on [OpenEnv](https://github.com/facebookresearch/openenv) · trained with 
 | 📺 **Demo video (<2 min)** | [YouTube](https://www.youtube.com/watch?v=d4feqxbc87o) |
 | 📝 **Project writeup (HF)** | [iamnijin/credit-assessment-curriculum](https://huggingface.co/iamnijin/credit-assessment-curriculum) |
 | 📊 **Slide deck** | [Google Slides](https://docs.google.com/presentation/d/1a23eU9c3dIxvPGIKmg_sXPhP2fua97F2QYxI4ZRBaKM/edit?usp=sharing) |
-| 🎤 **Pitch script (3 min)** | [`docs/pitch.md`](docs/pitch.md) |
-| 🎬 **Video script + shot list** | [`docs/video_script.md`](docs/video_script.md) |
-| 📽️ **Slide-by-slide outline** | [`docs/slide_deck.md`](docs/slide_deck.md) |
 | 🛠 **Colab runbook** | [`docs/colab_runbook.md`](docs/colab_runbook.md) |
 | ✅ **Submission validator output** | [`assets/validation_output.txt`](assets/validation_output.txt) (3/3 checks pass) |
 
@@ -327,7 +324,7 @@ Credit_Assessment_Env/
 │   ├── fair_eval.py           # Apples-to-apples baseline-vs-trained with Wilson CIs
 │   └── generate_plots.py      # Re-render all charts from training_log.json
 ├── tests/                     # 35 pytest cases (ground truth + rewards + adversarial)
-├── docs/                      # pitch.md, slide_deck.md, video_script.md, colab_runbook.md
+├── docs/                      # colab_runbook.md
 └── assets/                    # Charts + slide assets
 ```
 

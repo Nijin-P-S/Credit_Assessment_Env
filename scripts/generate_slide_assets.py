@@ -14,7 +14,7 @@ Produces:
 - qr_colab.png            (slide 10)
 - qr_github.png           (slide 10)
 
-All PNGs use the deck palette documented in docs/slide_deck.md:
+All PNGs use the deck palette:
 - Background: #0F0F12 (near-black)
 - Text:       #F4E9D8 (warm cream)
 - Pink:       #FF6F91 (primary accent)
