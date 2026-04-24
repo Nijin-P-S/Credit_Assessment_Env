@@ -35,7 +35,7 @@ Built on [OpenEnv](https://github.com/facebookresearch/openenv) · trained with 
 | ▶️ **Train it yourself in Colab** | [`train_grpo_colab.ipynb`](train_grpo_colab.ipynb) · [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/Nijin-P-S/Credit_Assessment_Env/blob/main/train_grpo_colab.ipynb) |
 | 📺 **Demo video (<2 min)** | _Coming soon — link will be added once uploaded_ |
 | 📝 **Mini-blog (HF post)** | _Coming soon — link will be added once published_ |
-| 📊 **Slide deck** | _Coming soon — Google Slides link will be added_ |
+| 📊 **Slide deck** | [Google Slides](https://docs.google.com/presentation/d/1a23eU9c3dIxvPGIKmg_sXPhP2fua97F2QYxI4ZRBaKM/edit?usp=sharing) |
 | 🎤 **Pitch script (3 min)** | [`docs/pitch.md`](docs/pitch.md) |
 | 🎬 **Video script + shot list** | [`docs/video_script.md`](docs/video_script.md) |
 | 📽️ **Slide-by-slide outline** | [`docs/slide_deck.md`](docs/slide_deck.md) |
