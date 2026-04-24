@@ -24,3 +24,8 @@ Thumbs.db
 .vscode/
 *.swp
 *.swo
+
+# Personal practice / scratch notes (not for submission)
+pitch.txt
+*.scratch.md
+notes.local.*
