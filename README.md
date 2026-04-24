@@ -33,7 +33,7 @@ Built on [OpenEnv](https://github.com/facebookresearch/openenv) · trained with 
 | 🤖 **Phase 2 adapter (Vehicle)** | [iamnijin/credit-assessment-curriculum-phase2-vehicle](https://huggingface.co/iamnijin/credit-assessment-curriculum-phase2-vehicle) |
 | 🤖 **Phase 3 adapter (Home)** | [iamnijin/credit-assessment-curriculum-phase3-home](https://huggingface.co/iamnijin/credit-assessment-curriculum-phase3-home) |
 | ▶️ **Train it yourself in Colab** | [`train_grpo_colab.ipynb`](train_grpo_colab.ipynb) · [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/Nijin-P-S/Credit_Assessment_Env/blob/main/train_grpo_colab.ipynb) |
-| 📺 **Demo video (<2 min)** | _Coming soon — link will be added once uploaded_ |
+| 📺 **Demo video (<2 min)** | [YouTube](https://www.youtube.com/watch?v=d4feqxbc87o) |
 | 📝 **Project writeup (HF)** | [iamnijin/credit-assessment-curriculum](https://huggingface.co/iamnijin/credit-assessment-curriculum) |
 | 📊 **Slide deck** | [Google Slides](https://docs.google.com/presentation/d/1a23eU9c3dIxvPGIKmg_sXPhP2fua97F2QYxI4ZRBaKM/edit?usp=sharing) |
 | 🎤 **Pitch script (3 min)** | [`docs/pitch.md`](docs/pitch.md) |
