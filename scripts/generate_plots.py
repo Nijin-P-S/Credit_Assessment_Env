@@ -10,9 +10,9 @@ Once training finishes and has emitted a log file::
 
 Produces (in ``assets/``):
 
-- ``reward_curve.png``
-  Training reward vs step, with the pre-training baseline plotted as a
-  horizontal reference line.
+- ``grpo_loss.png``
+  GRPO training loss vs step (stability/transparency plot — not the reward
+  chart; for reward-going-up evidence see ``curriculum_phases.png``).
 
 - ``per_task_accuracy.png``
   Baseline vs trained accuracy grouped by loan type, plus the overall bar.
@@ -400,7 +400,7 @@ def main() -> int:
     args.out.mkdir(parents=True, exist_ok=True)
 
     results = [
-        plot_reward_curve(log, args.out / "reward_curve.png"),
+        plot_reward_curve(log, args.out / "grpo_loss.png"),
         plot_per_task_accuracy(log, args.out / "per_task_accuracy.png"),
         plot_adversarial_rounds(log, args.out / "adversarial_rounds.png"),
         plot_curriculum_phases(log, args.out / "curriculum_phases.png"),

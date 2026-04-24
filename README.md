@@ -108,7 +108,7 @@ with env:
 
 ## The Environment
 
-Three loan types of escalating difficulty. Each `reset()` produces a fresh applicant — good, bad, borderline, or one of 10 explicitly-designed **trap profiles**.
+Three loan types of escalating difficulty. Each `reset()` produces a fresh applicant — good, bad, borderline, or one of 9 explicitly-designed **trap profiles** (full list in [§ Themes Addressed](#themes-addressed)).
 
 | Task | Loan Type | Difficulty | What the agent must reason about |
 |------|-----------|------------|----------------------------------|
@@ -198,13 +198,13 @@ The default mode is the full pipeline: **SFT warmup → per-task curriculum (wit
 
 ### Stages
 
-1. **SFT warmup** ([`sft_warmup.py`](sft_warmup.py)) — 600 supervised examples, 2 epochs. Anchors the model on the desired output format (chain-of-thought + JSON) before GRPO starts. *In our run, this alone moved a 30-sample spot check from 80.8% baseline to 90%.*
+1. **SFT warmup** ([`sft_warmup.py`](sft_warmup.py)) — 600 supervised examples, 2 epochs. Anchors the model on the desired output format (chain-of-thought + JSON) before GRPO starts. *In our run, a quick 30-sample post-SFT spot check (separate from the n=120 fair-eval) returned 90% accuracy, which we used purely as a "format is anchored, safe to launch curriculum GRPO" gate — not as a benchmark number.*
 2. **Per-task curriculum** ([`train_grpo.py`](train_grpo.py)) — 3 phases (Personal → Vehicle → Home), 400 samples each, with 20% replay from earlier phases. Produces `iamnijin/credit-assessment-curriculum` (93.3% on n=120).
 3. **Adversarial round** ([Section 15 of the Colab notebook](train_grpo_colab.ipynb)) — 50 GRPO steps trained exclusively on the 9 trap profiles, starting from the curriculum adapter, LR=5e-7, β=0.4 to anchor against drift. Produces `iamnijin/credit-assessment-adversarial` (94.2% on n=120 — the headline). The `AdversarialTracker` records per-strategy failure rates so subsequent rounds can re-weight toward the worst trap automatically.
 
 ### Why this combination beats vanilla GRPO
 
-Earlier we tried vanilla GRPO on a mixed-difficulty batch with Qwen2.5-1.5B — overall improved by +10pp but **Vehicle Loans regressed by 14pp** (the model over-fit the high-density CIBIL/RERA patterns and forgot LTV reasoning). Per-task curriculum + replay buffer fixes that exact failure: each phase masters one rule cluster before the next is introduced, and replay keeps earlier rules from being overwritten.
+Earlier we tried vanilla GRPO on a mixed-difficulty batch with Qwen2.5-1.5B — overall improved by +10pp but **Vehicle Loans regressed by 14pp** (the model over-fit the high-density CIBIL/RERA patterns and forgot LTV reasoning). Per-task curriculum + replay buffer fixes that exact failure: each phase masters one rule cluster before the next is introduced, and replay keeps earlier rules from being overwritten. **The adversarial round on top adds another +0.83pp overall (and +2.5pp specifically on Home Loans) by surgically targeting the trap profiles the curriculum policy still missed**, while strictly not regressing any task.
 
 ---
 
@@ -218,9 +218,9 @@ This is the **reward-improvement** chart for the rubric: each phase's per-task e
 
 ### GRPO training-loss trajectory (auxiliary, 3 phases)
 
-![Training loss across 3 curriculum phases](assets/reward_curve.png)
+![GRPO training loss across 3 curriculum phases](assets/grpo_loss.png)
 
-*Note on this chart: the y-axis is **GRPO loss**, not reward — the file is named `reward_curve.png` for historical reasons.* x-axis: training step (0 → 1200 across 3 phases). Vertical dashed lines mark phase boundaries. The loss stays close to zero throughout — that's the SFT warmup paying off (the policy is already in the right region of output space; GRPO is doing fine-grained shaping rather than coarse correction). Spikes correspond to phase transitions when a new loan type's training samples enter the buffer. **For the actual reward-going-up evidence, see the per-phase mastery chart immediately above.**
+*This is a **GRPO loss** trajectory, not a reward chart — included for transparency on training stability, not as the rubric's reward-improvement evidence.* x-axis: training step (0 → 1200 across 3 phases). Vertical dashed lines mark phase boundaries. The loss stays close to zero throughout — that's the SFT warmup paying off (the policy is already in the right region of output space; GRPO is doing fine-grained shaping rather than coarse correction). Spikes correspond to phase transitions when a new loan type's training samples enter the buffer. **For the actual reward-going-up evidence, see the per-phase mastery chart immediately above.**
 
 ### Per-task accuracy: baseline vs trained (n=120 with Wilson 95% CIs)
 
@@ -322,11 +322,12 @@ Credit_Assessment_Env/
 ├── Dockerfile                 # Environment server
 ├── server/
 │   ├── app.py                                  # FastAPI server
-│   ├── credit_assessment_env_environment.py    # Main env (orchestrator + AdversarialTracker)
+│   ├── credit_assessment_env_environment.py    # Main env (orchestrator)
 │   ├── generators/{personal,vehicle,home}_loan.py   # Applicant generators
 │   ├── ground_truth/{personal,vehicle,home}_loan.py # Decision rules
 │   ├── rewards/{personal,vehicle,home}_loan.py      # Reward shaping
 │   └── helpers/profile_builder.py                   # Builds LLM-readable narratives
+├── train_utils.py             # AdversarialTracker + 9 trap-profile generators
 ├── scripts/
 │   ├── fair_eval.py           # Apples-to-apples baseline-vs-trained with Wilson CIs
 │   └── generate_plots.py      # Re-render all charts from training_log.json
@@ -384,9 +385,9 @@ The full comparison across deterministic baselines and our LLM agents:
 **Reading this table:**
 - **Random ≈ 40%** confirms the environment isn't trivially solvable by guessing.
 - **Rule-Based = 100%** by construction — confirms rules are internally consistent and the env grading is correct (it's a sanity ceiling, not a competing approach: it sees pre-parsed JSON fields, not raw narratives).
-- **Qwen trained beats baseline by +15pp overall**, with the biggest swing on Vehicle Loans (+28pp) where LTV nuance matters most. See [Headline Result](#headline-result) for Wilson 95% CIs.
+- **Qwen trained (curriculum + adversarial) beats baseline by +13.3pp overall**, with the biggest swing on Vehicle Loans (+30pp) where LTV nuance matters most. The trained model also strictly does not regress on any task. See [Headline Result](#headline-result) for the full table with Wilson 95% CIs.
 
-**Why methodologies differ:** Random and Rule-Based are deterministic — running them on more samples just confirms what they'd do anyway. The two LLM agents share an identical 60-sample slice, identical prompt, and identical lenient parser, which is what makes the +15pp number a fair head-to-head. `scripts/fair_eval.py` re-runs that exact comparison with confidence intervals.
+**Why methodologies differ:** Random and Rule-Based are deterministic — running them on more samples just confirms what they'd do anyway. The two LLM agents share an identical n=120 (40-per-task) head-to-head slice, identical prompt, and identical lenient parser, which is what makes the +13.3pp number defensible — the Wilson 95% CIs for baseline overall ([72.9, 86.9]) and trained overall ([88.4, 97.1]) **do not overlap**, so the gain is statistically significant at p<0.05, not a sampling artifact. `scripts/fair_eval.py` reproduces that exact comparison.
 
 ---
 

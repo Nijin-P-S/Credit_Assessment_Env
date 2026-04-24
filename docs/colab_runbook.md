@@ -216,7 +216,7 @@ Run **Section 9** (the resilient generator — this is the only one you strictly
 - `assets/hackathon_results.png` — overall + per-task headline chart
 - `assets/per_task_accuracy.png` — same chart, README-friendly filename
 - `assets/curriculum_phases.png` — per-phase mastery line chart
-- `assets/reward_curve.png` — GRPO loss trajectory
+- `assets/grpo_loss.png` — GRPO loss trajectory
 - `training_log.json` — canonical schema for the README
 - `/content/training_outputs.zip` — everything bundled for one-click download
 
@@ -300,6 +300,6 @@ You should have:
 1. `iamnijin/credit-assessment-curriculum` (final adapter) on the Hub
 2. `iamnijin/credit-assessment-curriculum-phase{1,2,3}-{personal,vehicle,home}` (3 phase adapters) on the Hub
 3. `training_log.json` showing trained accuracy ≥ baseline + 8 percentage points overall
-4. 4 PNGs in `assets/`: `hackathon_results.png`, `per_task_accuracy.png`, `curriculum_phases.png`, `reward_curve.png`
+4. 4 PNGs in `assets/`: `hackathon_results.png`, `per_task_accuracy.png`, `curriculum_phases.png`, `grpo_loss.png`
 
 That's the submission.
