@@ -116,9 +116,10 @@ upload_artifacts() {
     for src in training_log.json \
                assets/fair_eval_results.json \
                assets/fair_eval_chart.png \
-               assets/reward_curve.png \
                assets/grpo_loss.png \
-               assets/per_task_accuracy.png; do
+               assets/per_task_accuracy.png \
+               assets/adversarial_rounds.png \
+               assets/curriculum_phases.png; do
         if [ -f "$src" ]; then
             dest="${RUN_DIR}/$(basename "$src")"
             echo "  → $src → $dest"
@@ -167,13 +168,22 @@ trap 'upload_artifacts || true' EXIT
     python -u train_grpo.py
 
     echo ""
-    echo "─── Step 3/3: n=120 fair-eval ───"
+    echo "─── Step 3/4: n=120 fair-eval ───"
     # Pull the adapter we just pushed from the Hub (proves the round-trip).
     python -u scripts/fair_eval.py \
         --base-model Qwen/Qwen2.5-7B-Instruct \
         --adapter-repo "${HUB_MODEL_ID}" \
         --num-samples 120 \
         --output-dir assets/
+
+    echo ""
+    echo "─── Step 4/4: Generate plots from training_log.json ───"
+    if [ -f training_log.json ]; then
+        python -u scripts/generate_plots.py training_log.json --out assets/ \
+            || echo "⚠ plot generation failed (continuing — JSON log is the source of truth)"
+    else
+        echo "⚠ training_log.json missing — skipping plots"
+    fi
 
     echo ""
     echo "─── Pipeline complete ───"
