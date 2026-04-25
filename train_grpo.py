@@ -160,6 +160,16 @@ class TrainConfig:
     # The final model is always saved locally via trainer.save_model() regardless.
     push_to_hub: bool = os.getenv("HF_PUSH_CHECKPOINTS", "1") == "1"
     hub_model_id: str = os.getenv("HUB_MODEL_ID", "iamnijin/credit-assessment-curriculum")
+    # Prefix used for per-phase repo names. If unset, defaults to hub_model_id
+    # so naming stays backward-compatible. Setting HUB_REPO_PREFIX explicitly
+    # lets the final repo (HUB_MODEL_ID) and per-phase repos use independent
+    # names — e.g. PREFIX=iamnijin/credit-assessment-onsite produces
+    # iamnijin/credit-assessment-onsite-phase1-personal while HUB_MODEL_ID
+    # itself can be iamnijin/credit-assessment-onsite-adversarial.
+    hub_repo_prefix: str = os.getenv(
+        "HUB_REPO_PREFIX",
+        os.getenv("HUB_MODEL_ID", "iamnijin/credit-assessment-curriculum"),
+    )
 
     # Logging
     logging_steps: int = 10
@@ -947,13 +957,28 @@ def train_with_curriculum(config: TrainConfig):
         # Per-phase Hub push: same safety net as the Colab notebook. If the
         # script crashes / gets disconnected during a later phase, the prior
         # phase's adapter is already on the Hub and can be re-loaded.
-        if config.push_per_phase and config.hub_model_id:
+        #
+        # We bypass trainer.push_to_hub() and use HfApi.upload_folder directly
+        # because: (1) trainer.push_to_hub(repo_id=...) forwards repo_id into
+        # _BaseTrainer.create_model_card() which rejects it in newer TRL, and
+        # (2) trainer caches the first repo it pushes to in self.hub_model_id,
+        # making per-phase repo overrides unreliable. Direct upload is also
+        # faster (skips model-card generation) and clearer about intent.
+        if config.push_per_phase and config.hub_repo_prefix:
             target_label = (phases[phase_idx][0] or f"phase{phase_idx+1}").replace(" ", "")
-            phase_hub_id = f"{config.hub_model_id}-phase{phase_idx+1}-{target_label}"
+            phase_hub_id = f"{config.hub_repo_prefix}-phase{phase_idx+1}-{target_label}"
             try:
-                print(f"  Pushing phase {phase_idx+1} adapter to {phase_hub_id}...")
-                trainer.push_to_hub(
+                from huggingface_hub import HfApi
+                api = HfApi()
+                # Idempotent — succeeds if repo exists, creates it otherwise.
+                api.create_repo(phase_hub_id, repo_type="model",
+                                exist_ok=True, private=False)
+                push_src = best_adapter_dir if os.path.isdir(best_adapter_dir) else config.output_dir
+                print(f"  Pushing phase {phase_idx+1} adapter ({push_src}) to {phase_hub_id}...")
+                api.upload_folder(
+                    folder_path=push_src,
                     repo_id=phase_hub_id,
+                    repo_type="model",
                     commit_message=f"Phase {phase_idx+1} ({target_label}) — {best_attempt_acc*100:.1f}% on per-phase eval",
                 )
                 print(f"  ✓ https://huggingface.co/{phase_hub_id}")
@@ -999,6 +1024,12 @@ def create_trainer_with_datasets(config: TrainConfig, train_dataset, eval_datase
         gradient_checkpointing=True,
         bf16=torch.cuda.is_available() and torch.cuda.is_bf16_supported(),
         fp16=torch.cuda.is_available() and not torch.cuda.is_bf16_supported(),
+        # Without hub_model_id, push_to_hub() falls back to output_dir basename
+        # ("grpo_credit_assessment") and creates the wrong repo. Always set
+        # the intended target so per-phase pushes and the final push both
+        # target HUB_MODEL_ID (and its phase variants set via args override).
+        push_to_hub=config.push_to_hub,
+        hub_model_id=config.hub_model_id,
         report_to="none",
     )
     
@@ -1506,7 +1537,7 @@ def main():
     print(f"  Model: {config.model_name}")
     sft_dir = _resolve_sft_init_dir(config)
     print(f"  SFT init: {'YES (' + sft_dir + ')' if sft_dir else 'NO (cold start — strongly recommend running sft_warmup.py first)'}")
-    print(f"  Push per phase: {config.push_per_phase} → {config.hub_model_id}-phase{{N}}-{{loan}}")
+    print(f"  Push per phase: {config.push_per_phase} → {config.hub_repo_prefix}-phase{{N}}-{{loan}}")
     print(f"  Eval/save strategy: {config.eval_strategy} / {config.save_strategy}")
     print(f"  Curriculum Learning: {config.use_curriculum}")
     print(f"  Curriculum mode: {config.curriculum_mode}")
@@ -1616,11 +1647,34 @@ def main():
 
     # Push final model to HF Hub (always, as long as HF_TOKEN is set and
     # HUB_MODEL_ID is valid). This is separate from intermediate push_to_hub.
+    #
+    # We use HfApi.upload_folder rather than trainer.push_to_hub() to avoid
+    # the same TRL/transformers create_model_card() kwargs issue that broke
+    # per-phase pushes. trainer.save_model() above already wrote the final
+    # adapter to config.output_dir, so we just upload that folder.
     if hf_token and config.hub_model_id:
         try:
+            from huggingface_hub import HfApi
+            api = HfApi()
+            api.create_repo(config.hub_model_id, repo_type="model",
+                            exist_ok=True, private=False)
             print(f"\nPushing final model to HuggingFace Hub: {config.hub_model_id}")
-            trainer.push_to_hub(
-                commit_message="Final model: curriculum + adversarial self-play GRPO"
+            api.upload_folder(
+                folder_path=config.output_dir,
+                repo_id=config.hub_model_id,
+                repo_type="model",
+                commit_message="Final model: curriculum + adversarial self-play GRPO",
+                # Exclude intermediate snapshots so the final repo contains
+                # only the final adapter files (adapter_config.json,
+                # adapter_model.safetensors, README.md, etc.). _best_adapter is
+                # the per-phase scratch dir, _curriculum_only is the snapshot
+                # before adversarial, checkpoint-* is mid-training (disabled
+                # by default but pattern guards against future re-enable).
+                ignore_patterns=[
+                    "_best_adapter/*", "_best_adapter",
+                    "_curriculum_only/*", "_curriculum_only",
+                    "checkpoint-*", "runs/*", "*.tmp",
+                ],
             )
             print(f"✓ Model pushed to https://huggingface.co/{config.hub_model_id}")
         except Exception as e:
