@@ -305,7 +305,55 @@ Step-by-step instructions including timing checkpoints and credit budget are in 
 
 ### Option B: Hugging Face Jobs (one-shot, ~$11 / ~5h on L40S)
 
-The whole pipeline (SFT → curriculum → 2 adversarial rounds → fair_eval → upload artifacts) runs in a single HF Job. See [`docs/hf_jobs_runbook.md`](docs/hf_jobs_runbook.md) for the exact command. Artifacts (training_log.json, all 4 plots, fair_eval_results.json, full stdout) are auto-pushed to a versioned dataset run folder for judge audit.
+The whole pipeline (SFT → curriculum → 2 adversarial rounds → fair_eval → upload artifacts) runs in a **single** HF Job. The adapters get pushed to date-stamped repos (so they can never overwrite the published Colab adapters), and every artifact (`training_log.json`, all 4 plots, `fair_eval_results.json`, full stdout transcript) lands in a versioned dataset folder under `iamnijin/credit-assessment-training-logs/run-<timestamp>/` for judge audit.
+
+**Pre-flight (one-time):**
+
+```bash
+pip install -U "huggingface_hub[cli]"
+hf auth login                    # paste a write-scoped HF token
+hf jobs ps                       # confirms HF Jobs is enabled on your account
+```
+
+> **Note on access:** `hf jobs run` requires a HF Pro / Team / Enterprise subscription (separate from credits). Free-tier accounts will get 401/403. Hackathons typically grant temporary Pro alongside the credit grant — check yours.
+
+**One-command run** (mirrors what produced the [run-20260425-105001 artifacts](https://huggingface.co/datasets/iamnijin/credit-assessment-training-logs/tree/main/run-20260425-105001)):
+
+```bash
+hf jobs run \
+  --flavor l40sx1 \
+  --secrets HF_TOKEN \
+  --timeout 12h \
+  pytorch/pytorch:2.6.0-cuda12.4-cudnn9-devel \
+  bash -c '
+    set -e
+    apt-get update -qq && apt-get install -qq -y git
+    cd /tmp && git clone https://github.com/Nijin-P-S/Credit_Assessment_Env repo
+    cd repo
+    pip install -q -r requirements-train.txt huggingface_hub
+    bash scripts/run_onsite_pipeline.sh
+  '
+```
+
+**Useful overrides** (insert before the `pytorch/pytorch:...` image line):
+
+| Flag | Purpose |
+|---|---|
+| `-e HUB_REPO_PREFIX=yourname/credit-assessment-onsite` | Use your own HF namespace for the per-phase adapter repos |
+| `-e HUB_MODEL_ID=yourname/credit-assessment-onsite-adversarial` | Final adapter repo name |
+| `-e USE_ADVERSARIAL=0` | Skip adversarial training (curriculum-only, ~$5, ~3h) |
+| `-e GRPO_NUM_ADVERSARIAL_ROUNDS=2` | Default is 2; bump to 3+ for more self-improvement loops |
+| `-e LOG_DATASET_REPO=yourname/credit-assessment-training-logs` | Push artifacts to your own dataset repo |
+| `--flavor a100-large` | Faster (~3h) but ~3× costlier than L40S; use if L40S is queueing |
+
+**Monitor:**
+
+```bash
+hf jobs ps                                # list running jobs
+hf jobs logs <JOB_ID> -f                  # follow live stdout
+```
+
+The pipeline has a **hard guard** that refuses to start if `HUB_MODEL_ID` matches any of the published Colab repos — so the existing headline adapters can't be accidentally overwritten. Full runbook with troubleshooting + crash recovery in [`docs/hf_jobs_runbook.md`](docs/hf_jobs_runbook.md).
 
 ### Option C: Local
 
