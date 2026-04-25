@@ -29,13 +29,18 @@ Built on [OpenEnv](https://github.com/facebookresearch/openenv) · trained with 
 |---|---|
 | 🌐 **Live environment (HF Space)** | [iamnijin/credit-assessment-env](https://huggingface.co/spaces/iamnijin/credit-assessment-env) |
 | 🏆 **Trained adapter (headline — curriculum + adversarial)** | [iamnijin/credit-assessment-adversarial](https://huggingface.co/iamnijin/credit-assessment-adversarial) |
+| 🔁 **Onsite HF Jobs reproduction (curriculum + adversarial, 2 rounds)** | [iamnijin/credit-assessment-onsite-adversarial](https://huggingface.co/iamnijin/credit-assessment-onsite-adversarial) |
+| 📂 **Onsite training logs + plots + fair-eval (run-20260425-105001)** | [HF Dataset · run-20260425-105001](https://huggingface.co/datasets/iamnijin/credit-assessment-training-logs/tree/main/run-20260425-105001) |
+| 📊 **Training log JSON (step-level rewards + curriculum + adversarial)** | [`training_log.json`](https://huggingface.co/datasets/iamnijin/credit-assessment-training-logs/blob/main/run-20260425-105001/training_log.json) |
+| 📈 **Cold-vs-trained chart with Wilson CIs (use this for slides)** | [`fair_eval_chart.png`](https://huggingface.co/datasets/iamnijin/credit-assessment-training-logs/blob/main/run-20260425-105001/fair_eval_chart.png) · [`fair_eval_results.json`](https://huggingface.co/datasets/iamnijin/credit-assessment-training-logs/blob/main/run-20260425-105001/fair_eval_results.json) |
 | 🤖 Curriculum-only checkpoint (intermediate) | [iamnijin/credit-assessment-curriculum](https://huggingface.co/iamnijin/credit-assessment-curriculum) |
 | 🤖 Phase 1 adapter (Personal) | [iamnijin/credit-assessment-curriculum-phase1-personal](https://huggingface.co/iamnijin/credit-assessment-curriculum-phase1-personal) |
 | 🤖 Phase 2 adapter (Vehicle) | [iamnijin/credit-assessment-curriculum-phase2-vehicle](https://huggingface.co/iamnijin/credit-assessment-curriculum-phase2-vehicle) |
 | 🤖 Phase 3 adapter (Home) | [iamnijin/credit-assessment-curriculum-phase3-home](https://huggingface.co/iamnijin/credit-assessment-curriculum-phase3-home) |
+| 🤖 Onsite phase adapters (run-20260425) | [phase1-personal](https://huggingface.co/iamnijin/credit-assessment-onsite-phase1-personal) · [phase2-vehicle](https://huggingface.co/iamnijin/credit-assessment-onsite-phase2-vehicle) · [phase3-home](https://huggingface.co/iamnijin/credit-assessment-onsite-phase3-home) |
 | ▶️ **Train it yourself in Colab** | [`train_grpo_colab.ipynb`](train_grpo_colab.ipynb) · [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/Nijin-P-S/Credit_Assessment_Env/blob/main/train_grpo_colab.ipynb) |
 | 📺 **Demo video (<2 min)** | [YouTube](https://www.youtube.com/watch?v=d4feqxbc87o) |
-| 📝 **Project writeup (HF)** | [iamnijin/credit-assessment-curriculum](https://huggingface.co/iamnijin/credit-assessment-curriculum) |
+| 📝 **Project writeup / blog** | [`docs/blog.md`](docs/blog.md) — "Teaching a Language Model to Be a Loan Officer" |
 | 📊 **Slide deck** | [Google Slides](https://docs.google.com/presentation/d/1J6wZbd4EyOqlfikty9F1kk4qLuRmRMtNY7Mk3Qf2ls0/edit?usp=sharing) |
 | 🛠 **Colab runbook** | [`docs/colab_runbook.md`](docs/colab_runbook.md) |
 | ✅ **Submission validator output** | [`assets/validation_output.txt`](assets/validation_output.txt) (3/3 checks pass) |
@@ -59,6 +64,21 @@ The base model already reads CIBIL/FOIR well on Personal Loans (95%) and handles
 
 The trained model **strictly beats baseline on every task** (no regression) and the overall +13.3pp delta clears the bar for a publishable result. The result you see is from the **curriculum + adversarial** adapter (`iamnijin/credit-assessment-adversarial`); a pure-curriculum checkpoint (`iamnijin/credit-assessment-curriculum`, 93.3% overall) is also published for ablation.
 
+### 🔁 Independent reproduction on HF Jobs (onsite, 2 adversarial rounds)
+
+The same pipeline was rerun end-to-end on **Hugging Face Jobs** (L40S × 1, ~5h, ~$11) with adversarial rounds bumped from 1 → 2. The fair-eval (n=120, same seed=999, same parser) reproduced the headline within noise:
+
+| Loan Type | Baseline | Trained (onsite, 2 adv rounds) | Δ | Verdict |
+|---|---|---|---|---|
+| Personal | 95.0% [83-99] | **100%** [91-100] | +5.0pp | noise (ceiling) |
+| Vehicle | 67.5% [52-80] | **92.5%** [80-97] | **+25.0pp ✅** | **better** |
+| Home | 82.5% [68-91] | **92.5%** [80-97] | +10.0pp | noise |
+| **Overall (n=120)** | **81.7%** [74-88] | **95.0%** [90-98] | **+13.3pp ✅** | **better** |
+
+**The +13.3pp overall delta matches the Colab result exactly** — independent reproduction on different hardware, different random seeds during training, with one extra adversarial round, lands on the same statistically-significant gain. Adapter: [`iamnijin/credit-assessment-onsite-adversarial`](https://huggingface.co/iamnijin/credit-assessment-onsite-adversarial). Full training logs, the cold-vs-trained fair-eval chart with Wilson CIs, the fair-eval JSON, and the complete stdout transcript are committed to a public dataset for judge audit: [run-20260425-105001](https://huggingface.co/datasets/iamnijin/credit-assessment-training-logs/tree/main/run-20260425-105001).
+
+> **Which file to use for the headline:** the cold-Qwen-vs-trained comparison is in **[`fair_eval_chart.png`](https://huggingface.co/datasets/iamnijin/credit-assessment-training-logs/blob/main/run-20260425-105001/fair_eval_chart.png)** and **[`fair_eval_results.json`](https://huggingface.co/datasets/iamnijin/credit-assessment-training-logs/blob/main/run-20260425-105001/fair_eval_results.json)**. The other `per_task_accuracy.png` in that same folder is an **internal training-time chart** whose "baseline" is the post-SFT, post-curriculum-but-pre-adversarial model — useful for ablation, not the cold-vs-trained headline. Use `fair_eval_chart.png` for slides, model card, and any judge-facing artifact.
+
 ---
 
 ## Themes Addressed
@@ -69,12 +89,12 @@ This submission addresses **both** themes; the evidence shipped is strongest for
 - Real RBI guidelines (tiered LTV, FOIR caps, RERA compliance, employment thresholds) — not toy rules
 - Asymmetric reward that mirrors actual NPA economics (approving a bad loan costs 3× more than rejecting a good one; non-RERA breach is 4×)
 - Multi-step workflows (`request_docs → re-evaluate`, `counter_offer → recalculate`)
-- 9 hand-crafted trap profiles ([`train_utils.py`](train_utils.py)) targeting the specific failure modes RBI rules create (CIBIL boundaries, LTV tiers, RERA blocks, FOIR co-applicant mirage)
+- 10 hand-crafted trap profiles ([`train_utils.py`](train_utils.py)) targeting the specific failure modes RBI rules create (CIBIL boundaries, LTV tiers, RERA blocks, FOIR co-applicant mirage)
 
 ### Secondary: Theme #4 — Self-Improvement
 - **Performance-gated curriculum** — Personal → Vehicle → Home, gated by per-phase accuracy (60% mastery threshold), not a fixed step count. Each phase produces a checkpoint that becomes the starting policy for the next — that's the self-improvement chain you can see climbing in [`assets/curriculum_phases.png`](assets/curriculum_phases.png)
 - **Replay buffer** — past-phase samples are mixed into later phases (default `replay_fraction=0.2`) to prevent catastrophic forgetting
-- **Adversarial self-play, one round actually run** — after the curriculum cleared every mastery gate, we ran a 50-step adversarial round (LR=5e-7, β=0.4, KL anchor to the curriculum reference) trained exclusively on the 10 trap profiles. The result lifted Home Loan accuracy from 87.5% → 90% (one extra correct on n=40) with **zero regression on any other task** and is published as [`iamnijin/credit-assessment-adversarial`](https://huggingface.co/iamnijin/credit-assessment-adversarial). The `AdversarialTracker` in [`train_utils.py`](train_utils.py) records which of the 10 trap profiles the model fails most so subsequent rounds can target weaknesses dynamically.
+- **Adversarial self-play, dynamically re-targeted** — after the curriculum cleared every mastery gate, we ran adversarial rounds (LR=5e-7, β=0.4, KL anchor to the curriculum reference) trained exclusively on the 10 trap profiles. The `AdversarialTracker` in [`train_utils.py`](train_utils.py) records which of the 10 trap profiles the model fails most each round and re-weights training data toward the worst trap automatically. The Colab run shipped 1 round → [`iamnijin/credit-assessment-adversarial`](https://huggingface.co/iamnijin/credit-assessment-adversarial) (Home 87.5 → 90% on n=40, zero regression elsewhere). The onsite HF Jobs run shipped 2 rounds → [`iamnijin/credit-assessment-onsite-adversarial`](https://huggingface.co/iamnijin/credit-assessment-onsite-adversarial), where Round 1 transferred to lift `perfect_but_rera` 80 → 100% and Round 2 specifically targeted `perfect_but_ltv_tier` and lifted it 0 → 40% — concrete evidence that the tracker-driven self-improvement loop actually moves the needle on previously-unseen trap classes between rounds.
 
 ---
 
@@ -200,7 +220,7 @@ The default mode is the full pipeline: **SFT warmup → per-task curriculum (wit
 
 1. **SFT warmup** ([`sft_warmup.py`](sft_warmup.py)) — 600 supervised examples, 2 epochs. Anchors the model on the desired output format (chain-of-thought + JSON) before GRPO starts. *In our run, a quick 30-sample post-SFT spot check (separate from the n=120 fair-eval) returned 90% accuracy, which we used purely as a "format is anchored, safe to launch curriculum GRPO" gate — not as a benchmark number.*
 2. **Per-task curriculum** ([`train_grpo.py`](train_grpo.py)) — 3 phases (Personal → Vehicle → Home), 400 samples each, with 20% replay from earlier phases. Produces `iamnijin/credit-assessment-curriculum` (93.3% on n=120).
-3. **Adversarial round** ([Section 15 of the Colab notebook](train_grpo_colab.ipynb)) — 50 GRPO steps trained exclusively on the 10 trap profiles, starting from the curriculum adapter, LR=5e-7, β=0.4 to anchor against drift. Produces `iamnijin/credit-assessment-adversarial` (94.2% on n=120 — the headline). The `AdversarialTracker` records per-strategy failure rates so subsequent rounds can re-weight toward the worst trap automatically.
+3. **Adversarial round** ([Section 15 of the Colab notebook](train_grpo_colab.ipynb)) — 50 GRPO steps trained exclusively on the 10 trap profiles, starting from the curriculum adapter, LR=5e-7, β=0.4 to anchor against drift. Produces `iamnijin/credit-assessment-adversarial` (94.2% on n=120 — the Colab headline). The `AdversarialTracker` records per-strategy failure rates so subsequent rounds can re-weight toward the worst trap automatically. The HF Jobs onsite rerun ran **2 rounds** (R1 lifted `perfect_but_rera` 80→100% via transfer; R2 targeted `perfect_but_ltv_tier` and lifted it 0→40%) and produced [`iamnijin/credit-assessment-onsite-adversarial`](https://huggingface.co/iamnijin/credit-assessment-onsite-adversarial) at **95.0% on n=120**.
 
 ### Why this combination beats vanilla GRPO
 
@@ -226,6 +246,8 @@ This is the **reward-improvement** chart for the rubric: each phase's per-task e
 
 ![Per-task accuracy comparison](assets/per_task_accuracy.png)
 
+*This local chart is the **Colab** fair-eval (cold Qwen vs `iamnijin/credit-assessment-adversarial`). The independently-rerun **onsite** version with 2 adversarial rounds is at [`fair_eval_chart.png` in the dataset run folder](https://huggingface.co/datasets/iamnijin/credit-assessment-training-logs/blob/main/run-20260425-105001/fair_eval_chart.png).*
+
 The Vehicle Loan jump (62.5% → 92.5%) is the headline — non-overlapping CIs so the +30pp gain is statistically real, not a sampling artifact. Personal Loan hits the 40/40 ceiling. Home Loan moves from 85% → 90% after the adversarial round; CIs overlap on this 40-sample slice but the absolute trained number is the highest the project has produced.
 
 ### Training-log JSON
@@ -250,10 +272,16 @@ We evaluate the **same applicant pool** for baseline and trained models, with th
 For an even more rigorous head-to-head, [`scripts/fair_eval.py`](scripts/fair_eval.py) loads the base model and the trained adapter sequentially, runs both through identical applicants, and reports per-task accuracy with **95% Wilson confidence intervals**:
 
 ```bash
-# Reproduce the n=120 headline (the curriculum + adversarial adapter):
+# Reproduce the Colab headline (curriculum + 1 adversarial round):
 python scripts/fair_eval.py \
   --base-model Qwen/Qwen2.5-7B-Instruct \
   --adapter-repo iamnijin/credit-assessment-adversarial \
+  --num-samples 120
+
+# Reproduce the onsite HF Jobs result (curriculum + 2 adversarial rounds, 95.0% overall):
+python scripts/fair_eval.py \
+  --base-model Qwen/Qwen2.5-7B-Instruct \
+  --adapter-repo iamnijin/credit-assessment-onsite-adversarial \
   --num-samples 120
 
 # Or evaluate the curriculum-only checkpoint for the ablation:
@@ -275,7 +303,11 @@ Output is written to `assets/fair_eval_results.json` and `assets/fair_eval_chart
 
 Step-by-step instructions including timing checkpoints and credit budget are in [`docs/colab_runbook.md`](docs/colab_runbook.md). The notebook will pull the latest repo, run the SFT warmup + curriculum, push per-phase adapters to your HF account, and emit `training_log.json` plus all four charts above.
 
-### Option B: Local
+### Option B: Hugging Face Jobs (one-shot, ~$11 / ~5h on L40S)
+
+The whole pipeline (SFT → curriculum → 2 adversarial rounds → fair_eval → upload artifacts) runs in a single HF Job. See [`docs/hf_jobs_runbook.md`](docs/hf_jobs_runbook.md) for the exact command. Artifacts (training_log.json, all 4 plots, fair_eval_results.json, full stdout) are auto-pushed to a versioned dataset run folder for judge audit.
+
+### Option C: Local
 
 ```bash
 pip install -r requirements-train.txt
@@ -283,7 +315,7 @@ python sft_warmup.py --num-samples 600 --num-epochs 2
 python train_grpo.py  # uses ./grpo_credit_assessment_sft as warm start
 ```
 
-Hardware: any GPU with ≥40GB VRAM (A100 / H100 / RTX 6000 Ada). On a single A100, the full SFT + 3-phase curriculum pipeline takes ~4 hours and ~22 Colab Pro compute units.
+Hardware: any GPU with ≥40GB VRAM (A100 / H100 / L40S / RTX 6000 Ada). On L40S × 1 (~$1.80/h on HF Jobs), the full SFT + 3-phase curriculum + 2-round adversarial pipeline takes ~5 hours.
 
 ---
 
@@ -379,7 +411,8 @@ The full comparison across deterministic baselines and our LLM agents:
 | Random | 0.467 | 0.350 | 0.400 | 0.406 | `baseline.py`, 100 eps/task, seed 42 |
 | Qwen2.5-7B baseline (ours) | 0.950 | 0.625 | 0.850 | 0.808 | n=120 (40/task), lenient parser, seed 999 |
 | Qwen2.5-7B trained, curriculum-only | 1.000 | 0.925 | 0.875 | 0.933 | Same n=120 head-to-head |
-| **Qwen2.5-7B trained, curriculum + adversarial (headline)** | **1.000** | **0.925** | **0.900** | **0.942** | Same n=120 head-to-head |
+| **Qwen2.5-7B trained, curriculum + adversarial (Colab headline)** | **1.000** | **0.925** | **0.900** | **0.942** | Same n=120 head-to-head |
+| **Qwen2.5-7B trained, onsite HF Jobs (curriculum + 2 adv rounds)** | **1.000** | **0.925** | **0.925** | **0.950** | Same n=120 head-to-head, independent rerun |
 | Rule-Based (oracle) | 1.000 | 1.000 | 1.000 | 1.000 | `baseline.py`, mirrors `calculate_ground_truth` |
 
 **Reading this table:**
