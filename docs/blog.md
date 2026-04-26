@@ -53,7 +53,7 @@ That asymmetry is the whole reason this is an RL problem and not a classificatio
 
 ## Designing the environment
 
-The env exposes three tasks of escalating difficulty, all served from a FastAPI box that speaks the [OpenEnv](https://github.com/facebookresearch/openenv) protocol:
+The env exposes three tasks of escalating difficulty, all served from a FastAPI box that speaks the [OpenEnv](https://github.com/meta-pytorch/OpenEnv) protocol:
 
 | Task | Loan Type | Difficulty | What the agent has to reason about |
 |------|-----------|------------|-------------------------------------|

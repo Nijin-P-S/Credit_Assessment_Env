@@ -19,7 +19,7 @@ We hand a 7B language model a stack of synthetic loan applications, the RBI unde
 
 After SFT warmup → per-task curriculum GRPO → one adversarial round, accuracy moves from **80.8% → 94.2%** (+13.3pp, n=120 with non-overlapping Wilson 95% CIs), with **Vehicle +30pp** (the Wilson-CI-clean win), **Personal +5pp** (ceiling), and **Home +5pp**. The trained model and the environment that taught it are both public.
 
-Built on [OpenEnv](https://github.com/facebookresearch/openenv) · trained with [HF TRL](https://github.com/huggingface/trl) · runnable in Colab on a free T4.
+Built on [OpenEnv](https://github.com/meta-pytorch/OpenEnv) · trained with [HF TRL](https://github.com/huggingface/trl) · runnable in Colab on a free T4.
 
 ---
 
@@ -488,5 +488,5 @@ The full comparison across deterministic baselines and our LLM agents:
 - [RERA Act and Bank Lending](https://enterslice.com/learning/no-loan-builders-not-registered-rera/)
 - [FOIR Calculation and Impact](https://www.techfinserv.com/blogs/foir/)
 - [CIBIL Score Requirements by Loan Type](https://paytm.com/blog/credit-score/the-ultimate-guide-to-cibil-score-requirements-for-different-loan-types-home-car-personal-2/)
-- [OpenEnv — Meta](https://github.com/facebookresearch/openenv)
+- [OpenEnv — Meta](https://github.com/meta-pytorch/OpenEnv)
 - [HuggingFace TRL — GRPO Trainer](https://huggingface.co/docs/trl/grpo_trainer)
