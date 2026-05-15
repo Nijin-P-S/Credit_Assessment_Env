@@ -6,10 +6,15 @@
 
 """FastAPI server for the Credit Assessment Environment."""
 
-from fastapi.responses import HTMLResponse
+import os
+from typing import Any, Dict, Optional
+
+from fastapi import Body, HTTPException, WebSocket, status
+from fastapi.responses import HTMLResponse, RedirectResponse
+from starlette.websockets import WebSocketDisconnect
 
 try:
-    from openenv.core.env_server.http_server import create_app
+    from openenv.core.env_server.http_server import create_app, create_fastapi_app
 except Exception as e:
     raise ImportError(
         "openenv is required. Install with: uv sync"
@@ -23,13 +28,131 @@ except ModuleNotFoundError:
     from server.credit_assessment_env_environment import CreditAssessmentEnvironment
 
 
-app = create_app(
-    CreditAssessmentEnvironment,
-    CreditAssessmentAction,
-    CreditAssessmentObservation,
-    env_name="credit_assessment_env",
-    max_concurrent_envs=1,
-)
+def _web_interface_enabled() -> bool:
+    return os.getenv("ENABLE_WEB_INTERFACE", "false").lower() in ("true", "1", "yes")
+
+
+def _create_openenv_app():
+    if not _web_interface_enabled():
+        return create_app(
+            CreditAssessmentEnvironment,
+            CreditAssessmentAction,
+            CreditAssessmentObservation,
+            env_name="credit_assessment_env",
+            max_concurrent_envs=1,
+        )
+
+    import gradio as gr
+    from openenv.core.env_server.web_interface import (
+        OPENENV_GRADIO_CSS,
+        OPENENV_GRADIO_THEME,
+        WebInterfaceManager,
+        _extract_action_fields,
+        _is_chat_env,
+        build_gradio_app,
+        get_gradio_display_title,
+        get_quick_start_markdown,
+        load_environment_metadata,
+    )
+
+    app = create_fastapi_app(
+        CreditAssessmentEnvironment,
+        CreditAssessmentAction,
+        CreditAssessmentObservation,
+        max_concurrent_envs=1,
+    )
+
+    metadata = load_environment_metadata(
+        CreditAssessmentEnvironment,
+        "credit_assessment_env",
+    )
+    web_manager = WebInterfaceManager(
+        CreditAssessmentEnvironment,
+        CreditAssessmentAction,
+        CreditAssessmentObservation,
+        metadata,
+    )
+
+    @app.get("/web/metadata")
+    async def web_metadata():
+        """Get environment metadata."""
+        return web_manager.metadata.model_dump()
+
+    @app.websocket("/ws/ui")
+    async def websocket_ui_endpoint(websocket: WebSocket):
+        """WebSocket endpoint for web UI real-time updates."""
+        await web_manager.connect_websocket(websocket)
+        try:
+            while True:
+                await websocket.receive_text()
+        except WebSocketDisconnect:
+            await web_manager.disconnect_websocket(websocket)
+
+    @app.post("/web/reset")
+    async def web_reset(request: Optional[Dict[str, Any]] = Body(default=None)):
+        """Reset endpoint for web interface."""
+        return await web_manager.reset_environment(request)
+
+    @app.post("/web/step")
+    async def web_step(request: Dict[str, Any]):
+        """Step endpoint for web interface."""
+        if "message" in request:
+            message = request["message"]
+            if hasattr(web_manager.env, "message_to_action"):
+                action = web_manager.env.message_to_action(message)
+                if hasattr(action, "tokens"):
+                    action_data = {"tokens": action.tokens.tolist()}
+                else:
+                    action_data = action.model_dump(exclude={"metadata"})
+            else:
+                action_data = {"message": message}
+        else:
+            action_data = request.get("action", {})
+
+        return await web_manager.step_environment(action_data)
+
+    @app.get("/web/state")
+    async def web_state():
+        """State endpoint for web interface."""
+        try:
+            return web_manager.get_state()
+        except RuntimeError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=str(exc),
+            ) from exc
+
+    @app.get("/playground", include_in_schema=False)
+    async def playground_root():
+        """Redirect the playground root to the mounted Gradio app."""
+        return RedirectResponse(url="/playground/")
+
+    action_fields = _extract_action_fields(CreditAssessmentAction)
+    is_chat_env = _is_chat_env(CreditAssessmentAction)
+    quick_start_md = get_quick_start_markdown(
+        metadata,
+        CreditAssessmentAction,
+        CreditAssessmentObservation,
+    )
+    gradio_blocks = build_gradio_app(
+        web_manager,
+        action_fields,
+        metadata,
+        is_chat_env,
+        title=metadata.name,
+        quick_start_md=quick_start_md,
+    )
+    return gr.mount_gradio_app(
+        app,
+        gradio_blocks,
+        path="/playground",
+        theme=OPENENV_GRADIO_THEME,
+        css=OPENENV_GRADIO_CSS,
+        app_kwargs={"title": get_gradio_display_title(metadata)},
+    )
+
+
+app = _create_openenv_app()
 
 
 LANDING_PAGE_HTML = """
@@ -385,6 +508,77 @@ LANDING_PAGE_HTML = """
       font-weight: 650;
     }
 
+    .playground-shell {
+      display: grid;
+      grid-template-columns: 0.56fr 1.44fr;
+      gap: 18px;
+      align-items: stretch;
+      min-height: 680px;
+      padding: 18px;
+      border: 1px solid var(--line);
+      border-radius: 34px;
+      background: rgba(255, 252, 247, 0.66);
+      box-shadow: var(--shadow);
+    }
+
+    .playground-copy {
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+      gap: 24px;
+      padding: 22px;
+      border-radius: 24px;
+      background: #2b2118;
+      color: #fbf7f0;
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+
+    .playground-copy h3 {
+      margin: 0 0 14px;
+      font-family: Georgia, "Times New Roman", serif;
+      font-size: clamp(30px, 4vw, 48px);
+      line-height: 0.98;
+      letter-spacing: -0.055em;
+      font-weight: 500;
+    }
+
+    .playground-copy p {
+      margin: 0;
+      color: #d9cbbb;
+      font-size: 15px;
+      line-height: 1.55;
+    }
+
+    .playground-steps {
+      display: grid;
+      gap: 10px;
+      margin-top: 22px;
+    }
+
+    .playground-step {
+      padding: 12px 0;
+      border-top: 1px solid rgba(255, 250, 243, 0.16);
+      color: #f8efe2;
+      font-size: 14px;
+      line-height: 1.45;
+    }
+
+    .playground-frame-wrap {
+      min-height: 640px;
+      overflow: hidden;
+      border: 1px solid rgba(43, 33, 24, 0.1);
+      border-radius: 24px;
+      background: #fffaf3;
+    }
+
+    .playground-frame {
+      width: 100%;
+      height: 100%;
+      min-height: 640px;
+      border: 0;
+      background: #fffaf3;
+    }
+
     .footer {
       display: flex;
       justify-content: space-between;
@@ -402,7 +596,8 @@ LANDING_PAGE_HTML = """
       }
 
       .hero,
-      .wide-card {
+      .wide-card,
+      .playground-shell {
         grid-template-columns: 1fr;
       }
 
@@ -420,6 +615,15 @@ LANDING_PAGE_HTML = """
         align-items: start;
         flex-direction: column;
       }
+
+      .playground-shell {
+        min-height: auto;
+      }
+
+      .playground-frame-wrap,
+      .playground-frame {
+        min-height: 760px;
+      }
     }
   </style>
 </head>
@@ -433,6 +637,7 @@ LANDING_PAGE_HTML = """
       <div class="nav-links">
         <a href="#how-it-works">How it works</a>
         <a href="#observations">Observations</a>
+        <a href="#playground">Playground</a>
         <a href="/docs">API docs</a>
       </div>
     </nav>
@@ -445,7 +650,7 @@ LANDING_PAGE_HTML = """
           A compact reinforcement-learning environment for credit assessment. Agents read synthetic loan files, choose underwriting actions, and receive rewards shaped by RBI-style lending rules.
         </p>
         <div class="actions" aria-label="Primary actions">
-          <a class="button primary" href="/docs">Explore the API</a>
+          <a class="button primary" href="#playground">Try the Playground</a>
           <a class="button secondary" href="#how-it-works">See the episode flow</a>
         </div>
       </div>
@@ -525,9 +730,43 @@ LANDING_PAGE_HTML = """
       </div>
     </section>
 
+    <section class="section" id="playground">
+      <div class="section-header">
+        <h2>Try the environment from the homepage.</h2>
+        <p class="section-kicker">
+          Reset to draw a synthetic applicant, enter an underwriting decision, then inspect the reward and next observation without leaving the landing page.
+        </p>
+      </div>
+      <div class="playground-shell">
+        <aside class="playground-copy">
+          <div>
+            <div class="terminal-label">Live playground</div>
+            <h3>Make a decision. See the feedback.</h3>
+            <p>
+              The embedded playground is the original OpenEnv interface. Use it to test approve, reject, request_docs, and counter_offer flows against the same API used by agents.
+            </p>
+            <div class="playground-steps">
+              <div class="playground-step">1. Click Reset to create a new loan file.</div>
+              <div class="playground-step">2. Choose an action and provide reasoning.</div>
+              <div class="playground-step">3. Step the environment and inspect reward, done, and raw JSON.</div>
+            </div>
+          </div>
+          <a class="button secondary" href="/playground/" target="_blank" rel="noreferrer">Open full playground</a>
+        </aside>
+        <div class="playground-frame-wrap">
+          <iframe
+            class="playground-frame"
+            title="Credit Assessment Environment Playground"
+            src="/playground/"
+            loading="lazy"
+          ></iframe>
+        </div>
+      </div>
+    </section>
+
     <footer class="footer">
       <span>Built with OpenEnv for synthetic, auditable credit-assessment training.</span>
-      <span><a href="/health">Health</a> / <a href="/schema">Schema</a> / <a href="/metadata">Metadata</a></span>
+      <span><a href="/playground/">Playground</a> / <a href="/health">Health</a> / <a href="/schema">Schema</a> / <a href="/metadata">Metadata</a></span>
     </footer>
   </main>
 </body>
