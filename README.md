@@ -32,7 +32,7 @@ Built on [OpenEnv](https://github.com/meta-pytorch/OpenEnv) · trained with [HF 
 | 🔁 **Onsite HF Jobs reproduction (curriculum + adversarial, 2 rounds)** | [iamnijin/credit-assessment-onsite-adversarial](https://huggingface.co/iamnijin/credit-assessment-onsite-adversarial) |
 | 📂 **Onsite training logs + plots + fair-eval (run-20260425-105001)** | [HF Dataset · run-20260425-105001](https://huggingface.co/datasets/iamnijin/credit-assessment-training-logs/tree/main/run-20260425-105001) |
 | 📊 **Training log JSON (step-level rewards + curriculum + adversarial)** | [`training_log.json`](https://huggingface.co/datasets/iamnijin/credit-assessment-training-logs/blob/main/run-20260425-105001/training_log.json) |
-| 📈 **Cold-vs-trained chart with Wilson CIs (use this for slides)** | [`fair_eval_chart.png`](https://huggingface.co/datasets/iamnijin/credit-assessment-training-logs/blob/main/run-20260425-105001/fair_eval_chart.png) · [`fair_eval_results.json`](https://huggingface.co/datasets/iamnijin/credit-assessment-training-logs/blob/main/run-20260425-105001/fair_eval_results.json) |
+| 📈 **Cold-vs-trained chart with Wilson CIs** | [`fair_eval_chart.png`](https://huggingface.co/datasets/iamnijin/credit-assessment-training-logs/blob/main/run-20260425-105001/fair_eval_chart.png) · [`fair_eval_results.json`](https://huggingface.co/datasets/iamnijin/credit-assessment-training-logs/blob/main/run-20260425-105001/fair_eval_results.json) |
 | 🤖 Curriculum-only checkpoint (intermediate) | [iamnijin/credit-assessment-curriculum](https://huggingface.co/iamnijin/credit-assessment-curriculum) |
 | 🤖 Phase 1 adapter (Personal) | [iamnijin/credit-assessment-curriculum-phase1-personal](https://huggingface.co/iamnijin/credit-assessment-curriculum-phase1-personal) |
 | 🤖 Phase 2 adapter (Vehicle) | [iamnijin/credit-assessment-curriculum-phase2-vehicle](https://huggingface.co/iamnijin/credit-assessment-curriculum-phase2-vehicle) |
@@ -76,8 +76,6 @@ The same pipeline was rerun end-to-end on **Hugging Face Jobs** (L40S × 1, ~5h,
 | **Overall (n=120)** | **81.7%** [74-88] | **95.0%** [90-98] | **+13.3pp ✅** | **better** |
 
 **The +13.3pp overall delta matches the Colab result exactly** — independent reproduction on different hardware, different random seeds during training, with one extra adversarial round, lands on the same statistically-significant gain. Adapter: [`iamnijin/credit-assessment-onsite-adversarial`](https://huggingface.co/iamnijin/credit-assessment-onsite-adversarial). Full training logs, the cold-vs-trained fair-eval chart with Wilson CIs, the fair-eval JSON, and the complete stdout transcript are committed to a public dataset for judge audit: [run-20260425-105001](https://huggingface.co/datasets/iamnijin/credit-assessment-training-logs/tree/main/run-20260425-105001).
-
-> **Which file to use for the headline:** the cold-Qwen-vs-trained comparison is in **[`fair_eval_chart.png`](https://huggingface.co/datasets/iamnijin/credit-assessment-training-logs/blob/main/run-20260425-105001/fair_eval_chart.png)** and **[`fair_eval_results.json`](https://huggingface.co/datasets/iamnijin/credit-assessment-training-logs/blob/main/run-20260425-105001/fair_eval_results.json)**. The other `per_task_accuracy.png` in that same folder is an **internal training-time chart** whose "baseline" is the post-SFT, post-curriculum-but-pre-adversarial model — useful for ablation, not the cold-vs-trained headline. Use `fair_eval_chart.png` for slides, model card, and any judge-facing artifact.
 
 ---
 
